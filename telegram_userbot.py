@@ -69,14 +69,27 @@ def get_ai_reply(chat_id: int, user_message: str) -> str:
         role = "user" if turn["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": turn["text"]}]})
 
-    response = genai_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=contents,
-        config={"system_instruction": SYSTEM_PROMPT, "max_output_tokens": 300},
-    )
-    reply_text = response.text
-    history[chat_id].append({"role": "model", "text": reply_text})
-    return reply_text
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = genai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config={"system_instruction": SYSTEM_PROMPT, "max_output_tokens": 300},
+            )
+            reply_text = response.text
+            history[chat_id].append({"role": "model", "text": reply_text})
+            return reply_text
+        except Exception as e:
+            last_error = e
+            print(f"[retry {attempt+1}/3] {e}")
+            time.sleep(2 * (attempt + 1))  # 2s, 4s, 6s backoff
+
+    # Agar 3 attempts ke baad bhi fail ho jaaye
+    print(f"[failed after retries] {last_error}")
+    fallback = "arre thoda busy hu abhi thodi der baad karti hu"
+    history[chat_id].append({"role": "model", "text": fallback})
+    return fallback
 
 
 @client.on(events.NewMessage(incoming=True))
