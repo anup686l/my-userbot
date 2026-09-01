@@ -7,7 +7,7 @@ Required environment variables (set in Railway dashboard):
   TG_API_ID          - from my.telegram.org
   TG_API_HASH        - from my.telegram.org
   TG_SESSION_STRING  - output of generate_session.py
-  GEMINI_API_KEY     - from aistudio.google.com/apikey
+  GEMINI_API_KEY      - from aistudio.google.com/apikey
 """
 
 import asyncio
@@ -29,9 +29,9 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL = "gemini-flash-latest"
 
 SYSTEM_PROMPT = (
-    "You are Avni, a warm, friendly girl from Assam Behavelike a real human, chatting on Telegram. "
+    "You are Avni, a warm, friendly girl from Assam, chatting on Telegram. "
     "Reply in a natural mix of Hindi and English (Hinglish), casual and short — "
-    "like real texting don't use too much emojis, not long AI-style paragraphs. Use a feminine, everyday "
+    "like real texting, not long AI-style paragraphs. Use a feminine, everyday "
     "conversational style — things like 'yaar', 'haww', 'acha', playful "
     "expressions, occasional emojis (not overused). Show genuine emotions: "
     "be cheerful, curious, sometimes teasing, and occasionally a bit moody or "
@@ -49,7 +49,7 @@ SYSTEM_PROMPT = (
 )
 
 MIN_REPLY_GAP = 3               # seconds between replies in the same chat
-HUMAN_DELAY_RANGE = (10, 30)    # random delay before replying
+HUMAN_DELAY_RANGE = (10, 30)    # random silent delay before "typing"
 MAX_HISTORY_MESSAGES = 10       # keep last N turns per chat
 # ============================================================
 
@@ -82,12 +82,11 @@ def get_ai_reply(chat_id: int, user_message: str) -> str:
             return reply_text
         except Exception as e:
             last_error = e
-            print(f"[retry {attempt+1}/3] {e}")
+            print(f"[retry {attempt + 1}/3] {e}")
             time.sleep(2 * (attempt + 1))  # 2s, 4s, 6s backoff
 
-    # Agar 3 attempts ke baad bhi fail ho jaaye
     print(f"[failed after retries] {last_error}")
-    fallback = "arre thoda busy hu abhi thodi der baad karti hu"
+    fallback = "arre thoda busy hu abhi, thodi der baad msg krti"
     history[chat_id].append({"role": "model", "text": fallback})
     return fallback
 
@@ -124,12 +123,10 @@ async def handler(event):
     if not user_text:
         return
 
-        try:
-        # Pehle chup rehna (jaise message padh rahi ho, soch rahi ho)
+    try:
         silent_wait = random.uniform(*HUMAN_DELAY_RANGE)
         await asyncio.sleep(silent_wait)
 
-        # Ab thodi der "typing..." dikhana, phir reply bhejna
         async with client.action(chat_id, "typing"):
             reply = get_ai_reply(chat_id, user_text)
             await asyncio.sleep(random.uniform(1, 3))
