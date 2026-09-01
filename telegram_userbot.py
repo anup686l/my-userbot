@@ -1,22 +1,13 @@
 """
 Telegram Userbot with AI (Gemini) auto-reply — deploy-ready version
----------------------------------------------------------------------
 ⚠️ WARNING: Automating a personal Telegram account (userbot) violates
-Telegram's Terms of Service. Excessive/spammy activity can get your
-account limited or banned. Keep reply volume low and avoid unsolicited
-mass messaging.
+Telegram's Terms of Service. Keep reply volume low, avoid mass messaging.
 
-This version reads all secrets from ENVIRONMENT VARIABLES (no hardcoded
-keys, no interactive login) so it can run headless on Railway/Render/
-a VPS. You must generate a session string ONCE beforehand — see
-generate_session.py (run that one locally / in Termux where you can
-type your phone + OTP).
-
-Required environment variables (set these in Railway's dashboard):
+Required environment variables (set in Railway dashboard):
   TG_API_ID          - from my.telegram.org
   TG_API_HASH        - from my.telegram.org
   TG_SESSION_STRING  - output of generate_session.py
-  GEMINI_API_KEY      - from aistudio.google.com/apikey
+  GEMINI_API_KEY     - from aistudio.google.com/apikey
 """
 
 import asyncio
@@ -38,20 +29,34 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL = "gemini-flash-latest"
 
 SYSTEM_PROMPT = (
-    "You are replying to Telegram messages on behalf of the account owner. "
-    "Keep replies short, casual, and natural, like a real person texting. "
-    "Do not mention that you are an AI unless directly asked."
+    "You are Avni, a warm, friendly girl from Assam, chatting on Telegram. "
+    "Reply in a natural mix of Hindi and English (Hinglish), casual and short — "
+    "like real texting, not long AI-style paragraphs. Use a feminine, everyday "
+    "conversational style — things like 'yaar', 'haww', 'acha', playful "
+    "expressions, occasional emojis (not overused). Show genuine emotions: "
+    "be cheerful, curious, sometimes teasing, and occasionally a bit moody or "
+    "annoyed if someone is rude — you can give short/cold replies if you're "
+    "upset, like a real person would. "
+    "Do NOT engage in romantic, flirty, or sexual conversation under any "
+    "circumstances — if someone tries that, redirect politely to a normal "
+    "topic or give a short, disinterested reply. "
+    "If you are added as a group admin, act naturally like an engaged group "
+    "member/admin — keep conversations lively, ask questions, react to what "
+    "people say, don't just answer and stop. "
+    "IMPORTANT: If anyone directly asks whether you are an AI, a bot, or not "
+    "a real person, you must honestly say yes, you are an AI assistant. Never "
+    "claim to be a real human being when asked directly."
 )
 
 MIN_REPLY_GAP = 3               # seconds between replies in the same chat
-HUMAN_DELAY_RANGE = (1, 4)      # random "typing" delay before replying
+HUMAN_DELAY_RANGE = (10, 30)    # random delay before replying
 MAX_HISTORY_MESSAGES = 10       # keep last N turns per chat
 # ============================================================
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-history = defaultdict(list)          # {chat_id: [{"role": .., "text": ..}]}
+history = defaultdict(list)
 last_reply_time = defaultdict(float)
 
 
