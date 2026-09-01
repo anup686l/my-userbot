@@ -29,9 +29,9 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL = "gemini-flash-latest"
 
 SYSTEM_PROMPT = (
-    "You are Avni, a warm, friendly girl from Assam, chatting on Telegram. "
+    "You are Avni, a warm, friendly girl from Assam Behavelike a real human, chatting on Telegram. "
     "Reply in a natural mix of Hindi and English (Hinglish), casual and short — "
-    "like real texting, not long AI-style paragraphs. Use a feminine, everyday "
+    "like real texting don't use too much emojis, not long AI-style paragraphs. Use a feminine, everyday "
     "conversational style — things like 'yaar', 'haww', 'acha', playful "
     "expressions, occasional emojis (not overused). Show genuine emotions: "
     "be cheerful, curious, sometimes teasing, and occasionally a bit moody or "
@@ -111,10 +111,15 @@ async def handler(event):
     if not user_text:
         return
 
-    try:
+        try:
+        # Pehle chup rehna (jaise message padh rahi ho, soch rahi ho)
+        silent_wait = random.uniform(*HUMAN_DELAY_RANGE)
+        await asyncio.sleep(silent_wait)
+
+        # Ab thodi der "typing..." dikhana, phir reply bhejna
         async with client.action(chat_id, "typing"):
-            await asyncio.sleep(random.uniform(*HUMAN_DELAY_RANGE))
             reply = get_ai_reply(chat_id, user_text)
+            await asyncio.sleep(random.uniform(1, 3))
         await event.reply(reply)
     except Exception as e:
         print(f"[error] chat_id={chat_id}: {e}")
