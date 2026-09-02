@@ -33,7 +33,7 @@ API_HASH = os.environ["TG_API_HASH"]
 SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash").strip()
 
 OWNER_GROUP_ID = -1004417177344
@@ -396,6 +396,7 @@ MAX_BATCH_MESSAGES = int(os.getenv("MAX_BATCH_MESSAGES", "5"))
 
 
 async def process_reply_batch(chat_id: int):
+    print(f"[debug] reply worker started chat_id={chat_id}")
     try:
         # Let a burst of messages arrive before generating the answer.
         await asyncio.sleep(PENDING_BATCH_WAIT)
