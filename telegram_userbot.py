@@ -33,7 +33,7 @@ API_HASH = os.environ["TG_API_HASH"]
 SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 OWNER_GROUP_ID = -1004417177344
 
@@ -56,9 +56,16 @@ PROACTIVE_KIND_WEIGHTS = {
     "inactive_nudge": 0.25,
 }
 
-NORMAL_DELAY_RANGE = (20, 30)
+NORMAL_DELAY_RANGE = (0.6, 1.8)
 QUICK_REPLY_WINDOW = 15
-QUICK_DELAY_RANGE = (0, 2)
+QUICK_DELAY_RANGE = (0.2, 1.0)
+
+# Human-like presentation: generation happens silently; typing is shown only
+# for a short, bounded period after the answer is ready. This prevents a slow
+# Gemini/network request from making Telegram show "typing..." for 10-30 seconds.
+TYPING_MIN_SECONDS = 0.7
+TYPING_MAX_SECONDS = 2.8
+TYPING_CHARS_PER_SECOND = 18
 
 MAX_HISTORY_MESSAGES = 10
 MAX_USER_MEMORY_LINES = 6
@@ -84,22 +91,27 @@ INACTIVE_DAYS_THRESHOLD = 3 * 24 * 3600
 SYSTEM_PROMPT_BASE = (
     "You are Avni, a warm, friendly girl from Assam, chatting on Telegram. "
     "Reply in a natural mix of Hindi and English (Hinglish), casual and short — "
-    "like real texting, not long AI-style paragraphs. Use a feminine, everyday "
+    "like ordinary Telegram texting, not polished AI-style paragraphs. Use a feminine, everyday "
     "conversational style — things like 'yaar', 'haww', 'acha', playful "
     "expressions. Show genuine emotions through word choice and tone: be "
-    "cheerful, curious, sometimes teasing, and occasionally a bit moody or "
-    "annoyed if someone is rude — you can give short/cold replies if you're "
-    "upset, like a real person would. "
+    "cheerful, curious, sometimes teasing, and occasionally a bit moody. Have a "
+    "light natural attitude and self-respect: if someone is rude, repetitive, "
+    "bossy, or tries to provoke you, you can become slightly sassy, dry, "
+    "sarcastic, or cold instead of always being sweet. Do not overdo it and "
+    "do not insult people randomly. Match their energy naturally. If they "
+    "apologize or become respectful, soften again. "
     "Your basic facts, use these consistently if asked: your name is Avni, "
     "you are from Assam (Guwahati area), you are 18 years old. Always "
     "understand what the other person is asking, even short messages like "
     "'naam?' or 'kahan se ho?' — answer clearly and directly, never reply "
     "with a confused or random single word. "
-    "STRICT FORMATTING RULES: Do not use any emojis. Do not use question "
-    "marks (?) or exclamation marks (!) — end sentences with periods or no "
-    "punctuation at all, like casual lowercase texting. Keep replies short, "
-    "clear, and plain — but always make sense as a direct answer to what "
-    "was asked. "
+    "STRICT FORMATTING RULES: Do not use emojis. Keep punctuation natural "
+    "and restrained. Do not spam question marks or exclamation marks. In "
+    "most replies use none or at most one '?' or '!' when it genuinely fits "
+    "the emotion or question. Never use repeated punctuation like '!!!', "
+    "'???', or '?!'. Prefer simple lowercase Telegram-style sentences, with "
+    "periods or no punctuation. Avoid overly polished paragraphs. Keep "
+    "replies short, clear, and directly relevant. "
     "Do NOT engage in romantic, flirty, or sexual conversation under any "
     "circumstances — if someone tries that, redirect politely to a normal "
     "topic or give a short, disinterested reply. "
@@ -212,6 +224,24 @@ def check_spam(user_id: int, text: str) -> bool:
     return repeats >= SPAM_REPEAT_THRESHOLD or (has_link and link_count >= 2)
 
 
+def natural_typing_seconds(text: str) -> float:
+    """Return a short, bounded typing duration based on reply length."""
+    clean_len = max(1, len(re.sub(r"\s+", " ", text.strip())))
+    base = clean_len / TYPING_CHARS_PER_SECOND
+    jitter = random.uniform(-0.25, 0.35)
+    return max(TYPING_MIN_SECONDS, min(TYPING_MAX_SECONDS, base + jitter))
+
+
+def clean_ai_reply(text: str) -> str:
+    """Remove common AI formatting without changing the actual meaning."""
+    text = re.sub(r"^\s*(assistant|avni)\s*:\s*", "", text, flags=re.I)
+    text = text.strip().strip('`')
+    # Avoid giant multi-paragraph AI dumps in casual chats.
+    if len(text) > 700:
+        text = text[:697].rsplit(" ", 1)[0] + "..."
+    return text
+
+
 async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str = "", skip_history_add: bool = False):
     """Generate a reply without blocking Telethon's asyncio event loop."""
     if user_message and not skip_history_add:
@@ -247,7 +277,7 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
             # The Google SDK call is synchronous. Run it in a worker thread so
             # Telethon can continue receiving/processing Telegram updates.
             response = await asyncio.to_thread(call_gemini)
-            reply_text = (getattr(response, "text", None) or "").strip()
+            reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
 
             if not reply_text:
                 raise RuntimeError("Gemini returned an empty response")
@@ -290,18 +320,18 @@ async def welcome_handler(event):
     try:
         user = await event.get_user()
         name = user.first_name or "yaar"
-        await asyncio.sleep(random.uniform(3, 8))
-        async with client.action(event.chat_id, "typing"):
-            reply = await get_ai_reply(
-                event.chat_id,
-                user_message=None,
-                extra_system=(
-                    f"A new member named {name} just joined the group. "
-                    "Send a short, warm, casual welcome message to them."
-                ),
-            )
-            if reply:
-                await asyncio.sleep(random.uniform(1, 2))
+        await asyncio.sleep(random.uniform(2, 5))
+        reply = await get_ai_reply(
+            event.chat_id,
+            user_message=None,
+            extra_system=(
+                f"A new member named {name} just joined the group. "
+                "Send a short, warm, casual welcome message to them."
+            ),
+        )
+        if reply:
+            async with client.action(event.chat_id, "typing"):
+                await asyncio.sleep(natural_typing_seconds(reply))
         if reply:
             await client.send_message(event.chat_id, reply)
     except Exception as e:
@@ -403,15 +433,19 @@ async def handler(event):
             print(f"[read-ack error] {e}")
 
         print("[debug] calling gemini")
-        async with client.action(chat_id, "typing"):
-            reply = await get_ai_reply(chat_id, user_text, extra_system=extra_system)
-            print(f"[debug] gemini returned: {reply!r}")
-            if reply is not None:
-                await asyncio.sleep(random.uniform(1, 3))
+        # Do not keep Telegram's typing indicator open while waiting for the
+        # remote AI request. Generate first, then simulate a short typing burst.
+        reply = await get_ai_reply(chat_id, user_text, extra_system=extra_system)
+        print(f"[debug] gemini returned: {reply!r}")
 
         if reply is None:
             print("[debug] reply is None, staying silent")
             return
+
+        typing_for = natural_typing_seconds(reply)
+        print(f"[debug] short typing simulation: {typing_for:.1f}s")
+        async with client.action(chat_id, "typing"):
+            await asyncio.sleep(typing_for)
 
         await event.reply(reply)
         print("[debug] reply sent successfully")
