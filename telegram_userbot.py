@@ -33,7 +33,8 @@ API_HASH = os.environ["TG_API_HASH"]
 SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
 
 OWNER_GROUP_ID = -1004417177344
 
@@ -69,6 +70,8 @@ TYPING_CHARS_PER_SECOND = 18
 
 MAX_HISTORY_MESSAGES = 10
 MAX_USER_MEMORY_LINES = 6
+MAX_CONCURRENT_GEMINI = int(os.getenv("MAX_CONCURRENT_GEMINI", "3"))
+GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "20"))
 
 REACTION_CHANCE = 0.15
 KEYWORD_REACTIONS = [
@@ -142,6 +145,8 @@ AI_ENABLED = True
 
 history = defaultdict(list)
 last_incoming_time = defaultdict(lambda: 0.0)
+chat_locks = defaultdict(asyncio.Lock)
+gemini_semaphore = asyncio.Semaphore(MAX_CONCURRENT_GEMINI)
 last_activity_time = defaultdict(lambda: time.time())
 
 user_names = {}
@@ -236,6 +241,9 @@ def clean_ai_reply(text: str) -> str:
     """Remove common AI formatting without changing the actual meaning."""
     text = re.sub(r"^\s*(assistant|avni)\s*:\s*", "", text, flags=re.I)
     text = text.strip().strip('`')
+    # Remove repeated punctuation while preserving a normal single mark.
+    text = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], text)
+    text = re.sub(r"\s+", " ", text).strip()
     # Avoid giant multi-paragraph AI dumps in casual chats.
     if len(text) > 700:
         text = text[:697].rsplit(" ", 1)[0] + "..."
@@ -243,57 +251,86 @@ def clean_ai_reply(text: str) -> str:
 
 
 async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str = "", skip_history_add: bool = False):
-    """Generate a reply without blocking Telethon's asyncio event loop."""
-    if user_message and not skip_history_add:
-        history[chat_id].append({"role": "user", "text": user_message})
-        history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
-
-    contents = []
-    for turn in history[chat_id]:
-        role = "user" if turn["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": turn["text"]}]})
-
-    if not contents:
-        contents = [{"role": "user", "parts": [{"text": "(no recent messages)"}]}]
-
-    system_text = SYSTEM_PROMPT_BASE + " " + get_mood_addition()
-    if extra_system:
-        system_text += " " + extra_system
-
-    def call_gemini():
-        return genai_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config={
-                "system_instruction": system_text,
-                "max_output_tokens": 300,
-                "temperature": 0.8,
-            },
-        )
-
-    last_error = None
-    for attempt in range(3):
-        try:
-            # The Google SDK call is synchronous. Run it in a worker thread so
-            # Telethon can continue receiving/processing Telegram updates.
-            response = await asyncio.to_thread(call_gemini)
-            reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
-
-            if not reply_text:
-                raise RuntimeError("Gemini returned an empty response")
-
-            history[chat_id].append({"role": "model", "text": reply_text})
+    """Generate a reply safely without blocking Telethon."""
+    lock = chat_locks[chat_id]
+    async with lock:
+        if user_message and not skip_history_add:
+            history[chat_id].append({"role": "user", "text": user_message})
             history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
-            return reply_text
 
-        except Exception as e:
-            last_error = e
-            print(f"[Gemini retry {attempt + 1}/3] {type(e).__name__}: {e}")
-            if attempt < 2:
-                await asyncio.sleep(2 * (attempt + 1))
+        contents = []
+        for turn in history[chat_id]:
+            role = "user" if turn["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": turn["text"]}]})
+        if not contents:
+            contents = [{"role": "user", "parts": [{"text": "(start a short casual conversation)"}]}]
 
-    print(f"[Gemini failed after retries] {type(last_error).__name__}: {last_error}")
-    return None
+        system_text = SYSTEM_PROMPT_BASE + " " + get_mood_addition()
+        if extra_system:
+            system_text += " " + extra_system
+
+        def call_model(model_name):
+            return genai_client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config={
+                    "system_instruction": system_text,
+                    "max_output_tokens": 180,
+                },
+            )
+
+        models = [GEMINI_MODEL]
+        if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL not in models:
+            models.append(GEMINI_FALLBACK_MODEL)
+
+        last_error = None
+        async with gemini_semaphore:
+            for model_name in models:
+                try:
+                    print(f"[Gemini] requesting model={model_name}")
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(call_model, model_name),
+                        timeout=GEMINI_TIMEOUT_SECONDS,
+                    )
+                    reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
+                    if not reply_text:
+                        raise RuntimeError("Gemini returned an empty response")
+                    history[chat_id].append({"role": "model", "text": reply_text})
+                    history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+                    return reply_text
+                except asyncio.TimeoutError as e:
+                    last_error = e
+                    print(f"[Gemini timeout] model={model_name} after {GEMINI_TIMEOUT_SECONDS:.0f}s")
+                except Exception as e:
+                    last_error = e
+                    msg = str(e)
+                    print(f"[Gemini error] model={model_name} {type(e).__name__}: {msg}")
+                    # A model/access 404 is not fixed by retries; immediately try fallback.
+                    if "404" in msg or "NOT_FOUND" in msg or "not found" in msg.lower():
+                        continue
+                    # Rate limits/server errors get one short retry on the same model.
+                    if any(x in msg for x in ("429", "500", "502", "503", "504")):
+                        await asyncio.sleep(0.8)
+                        try:
+                            response = await asyncio.wait_for(
+                                asyncio.to_thread(call_model, model_name),
+                                timeout=GEMINI_TIMEOUT_SECONDS,
+                            )
+                            reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
+                            if reply_text:
+                                history[chat_id].append({"role": "model", "text": reply_text})
+                                history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+                                return reply_text
+                        except Exception as retry_error:
+                            last_error = retry_error
+                            print(f"[Gemini retry failed] {type(retry_error).__name__}: {retry_error}")
+                        continue
+                    # Auth/configuration errors should not be retried repeatedly.
+                    if any(x in msg.upper() for x in ("API KEY", "PERMISSION_DENIED", "UNAUTHENTICATED")):
+                        break
+
+        print(f"[Gemini failed] {type(last_error).__name__ if last_error else 'UnknownError'}: {last_error}")
+        return None
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ai(on|off)$'))
@@ -579,14 +616,11 @@ async def idle_watcher():
             extra_system = TOPIC_PROMPT_ADDITION
 
         try:
-            async with client.action(OWNER_GROUP_ID, "typing"):
-                msg = await get_ai_reply(OWNER_GROUP_ID, user_message=None, extra_system=extra_system)
-                if msg is not None:
-                    await asyncio.sleep(random.uniform(1, 3))
-
+            msg = await get_ai_reply(OWNER_GROUP_ID, user_message=None, extra_system=extra_system)
             if msg is None:
                 continue
-
+            async with client.action(OWNER_GROUP_ID, "typing"):
+                await asyncio.sleep(min(2.0, natural_typing_seconds(msg)))
             await client.send_message(OWNER_GROUP_ID, msg)
             last_activity_time[OWNER_GROUP_ID] = time.time()
 
