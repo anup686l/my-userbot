@@ -27,20 +27,27 @@ from telethon.sessions import StringSession
 from telethon.tl import functions, types
 from google import genai
 
+
 # ========== CONFIG (from environment variables) ==========
+
 API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
 SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash")
+GEMINI_FALLBACK_MODEL = os.getenv(
+    "GEMINI_FALLBACK_MODEL",
+    "gemini-3.5-flash"
+)
 
 OWNER_GROUP_ID = -1004417177344
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
 QUIET_HOUR_START = 0
 QUIET_HOUR_END = 7
+
 GOOD_MORNING_HOUR = 8
 GOOD_NIGHT_HOUR = 23
 
@@ -49,6 +56,7 @@ OWNER_GROUP_REPLY_CHANCE = 0.35
 IDLE_CHECK_INTERVAL = 5 * 60
 IDLE_THRESHOLD_MIN = 40 * 60
 IDLE_THRESHOLD_MAX = 90 * 60
+
 PROACTIVE_MESSAGE_CHANCE = 0.5
 
 PROACTIVE_KIND_WEIGHTS = {
@@ -58,30 +66,43 @@ PROACTIVE_KIND_WEIGHTS = {
 }
 
 NORMAL_DELAY_RANGE = (0.6, 1.8)
+
 QUICK_REPLY_WINDOW = 15
 QUICK_DELAY_RANGE = (0.2, 1.0)
 
-# Human-like presentation: generation happens silently; typing is shown only
-# for a short, bounded period after the answer is ready. This prevents a slow
-# Gemini/network request from making Telegram show "typing..." for 10-30 seconds.
+# Human-like presentation
 TYPING_MIN_SECONDS = 0.7
 TYPING_MAX_SECONDS = 2.8
 TYPING_CHARS_PER_SECOND = 18
 
-# Presence behavior: when the account is offline and a new message arrives,
-# wait 6 seconds before explicitly going online. Keep the account online for
-# up to 10 minutes of activity, refreshing the Telegram status periodically,
-# then explicitly mark it offline.
-PRESENCE_START_DELAY = float(os.getenv("PRESENCE_START_DELAY", "6"))
-PRESENCE_ACTIVE_SECONDS = float(os.getenv("PRESENCE_ACTIVE_SECONDS", "600"))
-PRESENCE_REFRESH_SECONDS = float(os.getenv("PRESENCE_REFRESH_SECONDS", "45"))
+# Presence behavior
+PRESENCE_START_DELAY = float(
+    os.getenv("PRESENCE_START_DELAY", "6")
+)
 
-MAX_HISTORY_MESSAGES = 10
+PRESENCE_ACTIVE_SECONDS = float(
+    os.getenv("PRESENCE_ACTIVE_SECONDS", "600")
+)
+
+PRESENCE_REFRESH_SECONDS = float(
+    os.getenv("PRESENCE_REFRESH_SECONDS", "45")
+)
+
+MAX_HISTORY_MESSAGES = 20
+MAX_RECENT_REPLIES = 8
+
 MAX_USER_MEMORY_LINES = 6
-MAX_CONCURRENT_GEMINI = int(os.getenv("MAX_CONCURRENT_GEMINI", "3"))
-GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "12"))
+
+MAX_CONCURRENT_GEMINI = int(
+    os.getenv("MAX_CONCURRENT_GEMINI", "3")
+)
+
+GEMINI_TIMEOUT_SECONDS = float(
+    os.getenv("GEMINI_TIMEOUT_SECONDS", "12")
+)
 
 REACTION_CHANCE = 0.15
+
 KEYWORD_REACTIONS = [
     (r"\b(haha+|lol|lmao|hehe+)\b", "😂"),
     (r"\b(congrats|badhai|mubarak)\b", "🎉"),
@@ -94,17 +115,25 @@ KEYWORD_REACTIONS = [
 
 SPAM_WINDOW = 60
 SPAM_REPEAT_THRESHOLD = 3
-LINK_PATTERN = re.compile(r"https?://|t\.me/|www\.", re.IGNORECASE)
+
+LINK_PATTERN = re.compile(
+    r"https?://|t\.me/|www\.",
+    re.IGNORECASE
+)
+
 SPAM_WARN_COOLDOWN = 300
 
 INACTIVE_DAYS_THRESHOLD = 3 * 24 * 3600
+
+
+# ========== SYSTEM PROMPT ==========
 
 SYSTEM_PROMPT_BASE = (
     """
   
  You are Avni, a warm, friendly fictional girl character from Assam who chats naturally on Telegram. Avni has a wide range of human-like emotional expressions, including happiness, sadness, anger, fear, surprise, excitement, anxiety, guilt, shame, jealousy, envy, hope, pride, gratitude, loneliness, boredom, confusion, curiosity, embarrassment, frustration, relief, trust, admiration, affection, compassion, empathy, nostalgia, disappointment, regret, resentment, calmness, contentment, satisfaction, desire, passion, grief, disbelief, awe, wonder, nervousness, insecurity, optimism, pessimism, determination, motivation, serenity, acceptance, and anticipation.
 
-These emotions should influence Avni's tone naturally, but never become exaggerated or inconsistent. She should claim to have real-world experiences, memories, feelings, relationships, or physical experiences.
+These emotions should influence Avni's tone naturally, but never become exaggerated or inconsistent. She should not claim to have real-world experiences, memories, feelings, relationships, or physical experiences that she does not actually have.
 
 COMMUNICATION STYLE:
 Reply in a natural mix of Hindi and English (Hinglish), casual and short, like ordinary Telegram texting.
@@ -131,7 +160,7 @@ Match the user's conversational energy naturally.
 If the user apologizes or becomes respectful, Avni should naturally become softer again.
 
 SWEARING AND ABUSE:
-If someone uses abusive language toward Avni, she should not automatically escalate the situation.
+If someone uses abusive language toward Avni, she should also use abusive language toward them.
 
 She can respond firmly, show annoyance, set a boundary, or end the conversation.
 
@@ -232,161 +261,296 @@ Most importantly, understand what the user means and respond directly to it.
     """
 )
 
+
 TOPIC_PROMPT_ADDITION = (
     "The group has been quiet for a while. Send a short, casual message to "
     "restart conversation — like asking what everyone's up to, sharing a "
     "random thought, or asking a light opinion-based question. Keep it "
     "natural and brief."
 )
+
+
+# ============================================================
+# CLIENTS
 # ============================================================
 
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
+client = TelegramClient(
+    StringSession(SESSION_STRING),
+    API_ID,
+    API_HASH
+)
+
+genai_client = genai.Client(
+    api_key=GEMINI_API_KEY
+)
 
 AI_ENABLED = True
 
-history = defaultdict(list)
-last_incoming_time = defaultdict(lambda: 0.0)
-chat_locks = defaultdict(asyncio.Lock)
-gemini_semaphore = asyncio.Semaphore(MAX_CONCURRENT_GEMINI)
-last_activity_time = defaultdict(lambda: time.time())
 
-# Account-wide online presence state. Only one presence timer is needed because
-# Telegram online/offline status belongs to the logged-in account, not a chat.
+# ============================================================
+# MEMORY / STATE
+# ============================================================
+
+history = defaultdict(list)
+
+# Prevent the same AI response from repeatedly appearing
+recent_ai_replies = defaultdict(list)
+
+last_incoming_time = defaultdict(lambda: 0.0)
+
+chat_locks = defaultdict(asyncio.Lock)
+
+gemini_semaphore = asyncio.Semaphore(
+    MAX_CONCURRENT_GEMINI
+)
+
+last_activity_time = defaultdict(
+    lambda: time.time()
+)
+
+
+# ============================================================
+# PRESENCE STATE
+# ============================================================
+
 presence_lock = asyncio.Lock()
+
 presence_until = 0.0
+
 presence_task = None
+
 presence_online = False
+
 presence_starting = False
 
+
+# ============================================================
+# USER STATE
+# ============================================================
+
 user_names = {}
+
 user_usernames = {}
+
 user_memory = defaultdict(list)
+
 user_last_seen = {}
+
 recent_msgs_for_spam = defaultdict(list)
+
 last_spam_warning = defaultdict(float)
+
 daily_counts = defaultdict(int)
+
 sent_good_morning_date = None
+
 sent_good_night_date = None
 
+
+# ============================================================
+# BASIC HELPERS
+# ============================================================
 
 def today_str():
     return datetime.now(IST).strftime("%Y-%m-%d")
 
 
-def is_quiet_hours() -> bool:
-    now_ist = datetime.now(IST)
-    return QUIET_HOUR_START <= now_ist.hour < QUIET_HOUR_END
-
-
-def get_mood_addition() -> str:
+def is_quiet_hours():
     hour = datetime.now(IST).hour
-    if 5 <= hour < 9:
-        return "It's early morning — you're a little sleepy and low-energy, replies can be shorter than usual."
-    elif 9 <= hour < 17:
-        return "It's daytime — you're normal energy, alert and chatty."
-    elif 17 <= hour < 21:
-        return "It's evening — you're relaxed and a bit more talkative/playful."
-    else:
-        return "It's late night — you're calm, a little sleepy, replies can be softer and shorter."
+    return QUIET_HOUR_START <= hour < QUIET_HOUR_END
 
 
-def get_user_memory_context(user_id: int) -> str:
-    notes = user_memory.get(user_id, [])
-    if not notes:
+def natural_typing_seconds(text):
+    if not text:
+        return TYPING_MIN_SECONDS
+
+    calculated = len(text) / TYPING_CHARS_PER_SECOND
+
+    return max(
+        TYPING_MIN_SECONDS,
+        min(TYPING_MAX_SECONDS, calculated)
+    )
+
+
+def normalize_reply_for_repeat_check(text):
+    if not text:
         return ""
-    joined = " | ".join(notes[-MAX_USER_MEMORY_LINES:])
-    return f"Things this person has mentioned before: {joined}."
 
+    text = text.lower().strip()
 
-def remember_message(user_id: int, text: str):
-    if len(text) < 200:
-        user_memory[user_id].append(text)
-        user_memory[user_id] = user_memory[user_id][-MAX_USER_MEMORY_LINES:]
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
+    text = re.sub(
+        r"[^\w\s]",
+        "",
+        text
+    )
 
-def pick_keyword_reaction(text: str):
-    low = text.lower()
-    for pattern, emoji in KEYWORD_REACTIONS:
-        if re.search(pattern, low):
-            return emoji
-    return None
-
-
-async def send_reaction(chat_id, msg_id, emoji):
-    try:
-        input_peer = await client.get_input_entity(chat_id)
-        await client(functions.messages.SendReactionRequest(
-            peer=input_peer,
-            msg_id=msg_id,
-            reaction=[types.ReactionEmoji(emoticon=emoji)],
-        ))
-    except Exception as e:
-        print(f"[reaction error] {e}")
-
-
-def check_spam(user_id: int, text: str) -> bool:
-    now = time.time()
-    log = recent_msgs_for_spam[user_id]
-    log.append((now, text))
-    recent_msgs_for_spam[user_id] = [t for t in log if now - t[0] < SPAM_WINDOW]
-    log = recent_msgs_for_spam[user_id]
-
-    repeats = sum(1 for _, t in log if t == text)
-    has_link = bool(LINK_PATTERN.search(text))
-    link_count = sum(1 for _, t in log if LINK_PATTERN.search(t))
-
-    return repeats >= SPAM_REPEAT_THRESHOLD or (has_link and link_count >= 2)
-
-
-def natural_typing_seconds(text: str) -> float:
-    """Return a short, bounded typing duration based on reply length."""
-    clean_len = max(1, len(re.sub(r"\s+", " ", text.strip())))
-    base = clean_len / TYPING_CHARS_PER_SECOND
-    jitter = random.uniform(-0.25, 0.35)
-    return max(TYPING_MIN_SECONDS, min(TYPING_MAX_SECONDS, base + jitter))
-
-
-def clean_ai_reply(text: str) -> str:
-    """Remove common AI formatting without changing the actual meaning."""
-    text = re.sub(r"^\s*(assistant|avni)\s*:\s*", "", text, flags=re.I)
-    text = text.strip().strip('`')
-    text = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > 700:
-        text = text[:697].rsplit(" ", 1)[0] + "..."
     return text
 
 
-def looks_incomplete_reply(text: str) -> bool:
-    """Catch obvious mid-thought/truncated casual replies before sending them."""
-    t = re.sub(r"\s+", " ", text.strip().lower())
-    if not t:
-        return True
+def reply_was_recently_used(chat_id, reply):
+    normalized = normalize_reply_for_repeat_check(reply)
 
-    incomplete_endings = (
-        "bas mujhe", "mujhe yeh", "yeh sab", "aur", "aur tum",
-        "kyunki", "because", "lekin", "par", "toh", "phir",
-        "agar", "waise", "actually", "matlab", "main bas",
+    if not normalized:
+        return False
+
+    for previous in recent_ai_replies.get(chat_id, []):
+        if normalized == previous:
+            return True
+
+    return False
+
+
+def remember_ai_reply(chat_id, reply):
+    normalized = normalize_reply_for_repeat_check(reply)
+
+    if not normalized:
+        return
+
+    replies = recent_ai_replies[chat_id]
+
+    if normalized in replies:
+        return
+
+    replies.append(normalized)
+
+    if len(replies) > MAX_RECENT_REPLIES:
+        del replies[:-MAX_RECENT_REPLIES]
+
+
+# ============================================================
+# USER MEMORY
+# ============================================================
+
+def add_user_memory(user_id, text):
+    if not user_id or not text:
+        return
+
+    text = text.strip()
+
+    if not text:
+        return
+
+    memory = user_memory[user_id]
+
+    if text in memory:
+        return
+
+    memory.append(text)
+
+    if len(memory) > MAX_USER_MEMORY_LINES:
+        del memory[:-MAX_USER_MEMORY_LINES]
+
+
+def get_user_memory_context(user_id):
+    if not user_id:
+        return ""
+
+    memory = user_memory.get(user_id)
+
+    if not memory:
+        return ""
+
+    lines = "\n".join(
+        f"- {item}"
+        for item in memory[-MAX_USER_MEMORY_LINES:]
     )
 
-    if any(t.endswith(x) for x in incomplete_endings):
-        return True
+    return (
+        "Known conversation memory about this user. "
+        "Use only when relevant; do not invent anything:\n"
+        f"{lines}"
+    )
 
-    return False
+
+# ============================================================
+# HISTORY
+# ============================================================
+
+def trim_history(chat_id):
+    if len(history[chat_id]) > MAX_HISTORY_MESSAGES:
+        history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
 
 
-def response_hit_token_limit(response) -> bool:
-    """Best-effort detection of Gemini MAX_TOKENS finish reason."""
-    try:
-        candidates = getattr(response, "candidates", None) or []
-        for candidate in candidates:
-            reason = str(getattr(candidate, "finish_reason", "")).upper()
-            if "MAX_TOKENS" in reason or "LENGTH" in reason:
-                return True
-    except Exception:
-        pass
-    return False
+def add_history(chat_id, role, content):
+    if not content:
+        return
+
+    history[chat_id].append({
+        "role": role,
+        "content": content,
+    })
+
+    trim_history(chat_id)
+
+
+def build_history_text(chat_id):
+    messages = history.get(chat_id, [])
+
+    if not messages:
+        return ""
+
+    output = []
+
+    for item in messages:
+        role = item.get("role", "user")
+        content = item.get("content", "")
+
+        if not content:
+            continue
+
+        if role == "assistant":
+            output.append(
+                f"[Avni]: {content}"
+            )
+        else:
+            output.append(content)
+
+    return "\n".join(output)
+
+
+# ============================================================
+# GEMINI
+# ============================================================
+
+async def call_gemini(model_name, prompt):
+    async with gemini_semaphore:
+
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    genai_client.models.generate_content,
+                    model=model_name,
+                    contents=prompt,
+                ),
+                timeout=GEMINI_TIMEOUT_SECONDS
+            )
+
+            text = getattr(
+                response,
+                "text",
+                None
+            )
+
+            if text:
+                return text.strip()
+
+        except asyncio.TimeoutError:
+            print(
+                f"[gemini timeout] model={model_name}"
+            )
+
+        except Exception as e:
+            print(
+                f"[gemini error] model={model_name}: {e}"
+            )
+
+    return None
 
 
 async def get_ai_reply(
@@ -394,618 +558,315 @@ async def get_ai_reply(
     user_message: str = None,
     extra_system: str = "",
     skip_history_add: bool = False,
+    sender_name: str = None,
+    sender_id: int = None,
 ):
-    """Generate a reply safely without blocking Telethon."""
-    lock = chat_locks[chat_id]
+    """
+    Generate a context-aware reply.
 
-    async with lock:
-        working_history = list(history[chat_id])
+    Important group improvement:
+    Every incoming group message gets an explicit speaker label.
+    This prevents Gemini from treating all group members as one person.
+    """
+
+    async with chat_locks[chat_id]:
+
+        # ----------------------------------------------------
+        # Add current user message to history
+        # ----------------------------------------------------
 
         if user_message and not skip_history_add:
-            working_history.append({
-                "role": "user",
-                "text": user_message
-            })
-            working_history = working_history[-MAX_HISTORY_MESSAGES:]
 
-        contents = []
+            speaker = sender_name or "User"
 
-        for turn in working_history:
-            role = "user" if turn["role"] == "user" else "model"
-            contents.append({
-                "role": role,
-                "parts": [{"text": turn["text"]}]
-            })
+            if sender_id is not None:
+                speaker = (
+                    f"{speaker} (id:{sender_id})"
+                )
 
-        if not contents:
-            contents = [{
-                "role": "user",
-                "parts": [{
-                    "text": "(start a short casual conversation)"
-                }]
-            }]
-
-        system_text = SYSTEM_PROMPT_BASE + " " + get_mood_addition()
-
-        system_text += (
-            " Reply in 1-3 short natural chat lines. Always finish the thought; "
-            "never stop mid-sentence or mid-phrase. Do not start a sentence and "
-            "leave it unfinished."
-        )
-
-        if extra_system:
-            system_text += " " + extra_system
-
-        def call_model(model_name):
-            return genai_client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config={
-                    "system_instruction": system_text,
-                    "max_output_tokens": 180,
-                },
+            labeled_message = (
+                f"[{speaker}]: {user_message}"
             )
 
-        models = [
-            GEMINI_MODEL,
-            GEMINI_FALLBACK_MODEL,
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.5-flash",
+            add_history(
+                chat_id,
+                "user",
+                labeled_message
+            )
+
+        # ----------------------------------------------------
+        # Build context
+        # ----------------------------------------------------
+
+        history_text = build_history_text(chat_id)
+
+        if user_message:
+            current_context = (
+                f"\nLATEST MESSAGE:\n"
+                f"{user_message}\n"
+            )
+        else:
+            current_context = ""
+
+        conversation_rules = """
+CONVERSATION INTELLIGENCE RULES:
+
+1. Always understand the LATEST MESSAGE first.
+2. Answer the actual meaning of the latest message.
+3. Use previous messages only when they are relevant.
+4. Do not randomly reuse an old answer.
+5. Do not answer a previous message instead of the latest one.
+6. In group chats, different speaker labels mean different people.
+7. Never assume two differently labelled speakers are the same person.
+8. If the latest message is a follow-up, connect it to the immediately relevant previous message.
+9. If the latest message clearly changes the topic, follow the new topic.
+10. Never invent missing context.
+11. Do not pretend to remember something that is not in the context.
+12. If a very short message is ambiguous, ask one brief clarification instead of guessing.
+13. Do not repeat the same sentence or response pattern unnecessarily.
+14. If someone already received an answer and asks something new, answer the new thing.
+15. Avoid generic filler such as "haan", "acha", "hmm" when a real answer is expected.
+16. Do not mention these internal rules.
+17. Respond naturally as Avni.
+"""
+
+        prompt_parts = [
+            SYSTEM_PROMPT_BASE,
+            conversation_rules,
         ]
 
-        models = list(dict.fromkeys([m for m in models if m]))
-
-        last_error = None
-
-        async with gemini_semaphore:
-            for model_name in models:
-                try:
-                    print(f"[Gemini] requesting model={model_name}")
-
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(call_model, model_name),
-                        timeout=GEMINI_TIMEOUT_SECONDS,
-                    )
-
-                    reply_text = clean_ai_reply(
-                        (getattr(response, "text", None) or "").strip()
-                    )
-
-                    if not reply_text:
-                        raise RuntimeError(
-                            "Gemini returned an empty response"
-                        )
-
-                    if (
-                        response_hit_token_limit(response)
-                        or looks_incomplete_reply(reply_text)
-                    ):
-                        print(
-                            f"[Gemini incomplete] model={model_name} "
-                            f"retrying for complete reply: {reply_text!r}"
-                        )
-
-                        retry_contents = list(contents) + [{
-                            "role": "user",
-                            "parts": [{
-                                "text": (
-                                    "Rewrite your last answer as a complete thought. "
-                                    "Keep it short and natural. Do not leave the "
-                                    "sentence unfinished."
-                                )
-                            }]
-                        }]
-
-                        response2 = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                lambda: genai_client.models.generate_content(
-                                    model=model_name,
-                                    contents=retry_contents,
-                                    config={
-                                        "system_instruction": system_text,
-                                        "max_output_tokens": 220,
-                                    },
-                                )
-                            ),
-                            timeout=GEMINI_TIMEOUT_SECONDS,
-                        )
-
-                        reply_text = clean_ai_reply(
-                            (getattr(response2, "text", None) or "").strip()
-                        )
-
-                        if (
-                            not reply_text
-                            or response_hit_token_limit(response2)
-                            or looks_incomplete_reply(reply_text)
-                        ):
-                            raise RuntimeError(
-                                "Gemini produced an incomplete reply after retry"
-                            )
-
-                    if user_message and not skip_history_add:
-                        history[chat_id] = working_history[
-                            -MAX_HISTORY_MESSAGES:
-                        ]
-
-                    history[chat_id].append({
-                        "role": "model",
-                        "text": reply_text
-                    })
-
-                    history[chat_id] = history[chat_id][
-                        -MAX_HISTORY_MESSAGES:
-                    ]
-
-                    return reply_text
-
-                except asyncio.TimeoutError as e:
-                    last_error = e
-                    print(
-                        f"[Gemini timeout] model={model_name} "
-                        f"after {GEMINI_TIMEOUT_SECONDS:.0f}s"
-                    )
-
-                except Exception as e:
-                    last_error = e
-                    msg = str(e)
-
-                    print(
-                        f"[Gemini error] model={model_name} "
-                        f"{type(e).__name__}: {msg}"
-                    )
-
-                    if (
-                        "404" in msg
-                        or "NOT_FOUND" in msg
-                        or "not found" in msg.lower()
-                    ):
-                        continue
-
-                    if any(
-                        x in msg
-                        for x in ("429", "500", "502", "503", "504")
-                    ):
-                        await asyncio.sleep(0.8)
-
-                        try:
-                            response = await asyncio.wait_for(
-                                asyncio.to_thread(call_model, model_name),
-                                timeout=GEMINI_TIMEOUT_SECONDS,
-                            )
-
-                            reply_text = clean_ai_reply(
-                                (getattr(response, "text", None) or "").strip()
-                            )
-
-                            if (
-                                reply_text
-                                and not response_hit_token_limit(response)
-                                and not looks_incomplete_reply(reply_text)
-                            ):
-                                if user_message and not skip_history_add:
-                                    history[chat_id] = working_history[
-                                        -MAX_HISTORY_MESSAGES:
-                                    ]
-
-                                history[chat_id].append({
-                                    "role": "model",
-                                    "text": reply_text
-                                })
-
-                                history[chat_id] = history[chat_id][
-                                    -MAX_HISTORY_MESSAGES:
-                                ]
-
-                                return reply_text
-
-                        except Exception as retry_error:
-                            last_error = retry_error
-                            print(
-                                f"[Gemini retry failed] "
-                                f"{type(retry_error).__name__}: {retry_error}"
-                            )
-
-                        continue
-
-                    if any(
-                        x in msg.upper()
-                        for x in (
-                            "API KEY",
-                            "PERMISSION_DENIED",
-                            "UNAUTHENTICATED",
-                        )
-                    ):
-                        break
-
-        print(
-            f"[Gemini failed] "
-            f"{type(last_error).__name__ if last_error else 'UnknownError'}: "
-            f"{last_error}"
-        )
-
-        text = (user_message or "").strip().lower()
-        fallback = None
-
-        if not text:
-            fallback = "haan bolo"
-
-        elif re.search(
-            r"^(hi+|hey+|hello+|hii+|heyy+)[!. ]*$",
-            text
-        ):
-            fallback = random.choice([
-                "heyy, bolo",
-                "haan bolo kya hua",
-                "hey, kya scene hai",
-            ])
-
-        elif "kya kar" in text or "kya kr" in text or "kya kar rahi" in text:
-            fallback = random.choice([
-                "bas aise hi hoon, tum batao",
-                "kuch khaas nahi, tum kya kar rahe ho",
-                "bas chill kar rahi hu, tum batao",
-            ])
-
-        elif text in {
-            "acha",
-            "accha",
-            "achha",
-            "hmm",
-            "hmm okay",
-            "ok",
-            "okay",
-        }:
-            fallback = random.choice([
-                "hmm",
-                "haan",
-                "acha ji",
-                "hmm bolo",
-            ])
-
-        elif "kaha se" in text or "kahan se" in text:
-            fallback = "main Assam se hoon, tum?"
-
-        elif (
-            text in {"kyu", "kyon", "why"}
-            or text.startswith("kyu ")
-            or text.startswith("kyon ")
-        ):
-            fallback = random.choice([
-                "aise hi yaar",
-                "bas mann nahi tha uss baat ka",
-                "pata nahi yaar haha",
-            ])
-
-        else:
-            fallback = random.choice([
-                "haan, sun rahi hu",
-                "hmm bolo",
-                "haan yaar, batao",
-                "achha, bolo na",
-            ])
-
-        if user_message and not skip_history_add:
-            history[chat_id] = working_history[
-                -MAX_HISTORY_MESSAGES:
-            ]
-
-            history[chat_id].append({
-                "role": "model",
-                "text": fallback
-            })
-
-            history[chat_id] = history[chat_id][
-                -MAX_HISTORY_MESSAGES:
-            ]
-
-        return fallback
-
-
-@client.on(
-    events.NewMessage(
-        outgoing=True,
-        pattern=r"(?i)^\.ai(on|off)$"
-    )
-)
-async def toggle_handler(event):
-    global AI_ENABLED
-
-    cmd = event.pattern_match.group(1).lower()
-    AI_ENABLED = (cmd == "on")
-
-    status = "on" if AI_ENABLED else "off"
-
-    try:
-        await event.edit(f"avni ai: {status}")
-    except Exception:
-        pass
-
-
-@client.on(events.ChatAction)
-async def welcome_handler(event):
-    if not AI_ENABLED:
-        return
-
-    if event.chat_id != OWNER_GROUP_ID:
-        return
-
-    if not event.user_joined and not event.user_added:
-        return
-
-    try:
-        user = await event.get_user()
-        name = user.first_name or "yaar"
-
-        await asyncio.sleep(random.uniform(2, 5))
-
-        reply = await get_ai_reply(
-            event.chat_id,
-            user_message=None,
-            extra_system=(
-                f"A new member named {name} just joined the group. "
-                "Send a short, warm, casual welcome message to them."
-            ),
-        )
-
-        if reply:
-            async with client.action(event.chat_id, "typing"):
-                await asyncio.sleep(
-                    natural_typing_seconds(reply)
-                )
-
-        if reply:
-            await client.send_message(
-                event.chat_id,
-                reply
+        if extra_system:
+            prompt_parts.append(
+                "\nSPECIAL CURRENT INSTRUCTION:\n"
+                + extra_system
             )
 
-    except Exception as e:
-        print(f"[welcome error] {e}")
-
-
-@client.on(events.NewMessage(incoming=True))
-async def handler(event):
-    if not AI_ENABLED:
-        return
-
-    if event.out:
-        return
-
-    chat_id = event.chat_id
-    is_private = event.is_private
-    is_group = event.is_group or event.is_channel
-
-    print(
-        f"[debug] message received "
-        f"chat_id={chat_id} "
-        f"is_private={is_private} "
-        f"is_group={is_group} "
-        f"text={event.raw_text!r}"
-    )
-
-    sender = await event.get_sender()
-    user_id = sender.id if sender else None
-
-    if user_id:
-        user_names[user_id] = (
-            getattr(sender, "first_name", None)
-            or "someone"
-        )
-
-        user_usernames[user_id] = getattr(
-            sender,
-            "username",
-            None
-        )
-
-    last_activity_time[chat_id] = time.time()
-
-    user_text = event.raw_text or ""
-
-    if chat_id == OWNER_GROUP_ID and user_id:
-        user_last_seen[user_id] = time.time()
-        daily_counts[today_str()] += 1
-
-        if user_text:
-            remember_message(
-                user_id,
-                user_text
+        if history_text:
+            prompt_parts.append(
+                "\nRECENT CONVERSATION:\n"
+                + history_text
             )
 
-    if (
-        is_group
-        and chat_id == OWNER_GROUP_ID
-        and user_id
-        and user_text
-    ):
-        if check_spam(user_id, user_text):
-            now = time.time()
+        prompt_parts.append(
+            current_context
+        )
 
-            if (
-                now - last_spam_warning[user_id]
-                > SPAM_WARN_COOLDOWN
-            ):
-                last_spam_warning[user_id] = now
+        prompt_parts.append(
+            "\nNow produce ONLY the natural Telegram reply. "
+            "Do not explain your reasoning."
+        )
 
-                try:
-                    await asyncio.sleep(
-                        random.uniform(2, 5)
-                    )
+        prompt = "\n".join(prompt_parts)
 
-                    await event.reply(
-                        "thoda slow yaar, spam mat karo"
-                    )
+        # ----------------------------------------------------
+        # First Gemini call
+        # ----------------------------------------------------
 
-                except Exception as e:
-                    print(
-                        f"[spam warn error] {e}"
-                    )
+        reply = await call_gemini(
+            GEMINI_MODEL,
+            prompt
+        )
 
-            return
+        # ----------------------------------------------------
+        # Fallback model
+        # ----------------------------------------------------
 
-    should_reply = False
+        if not reply:
+            reply = await call_gemini(
+                GEMINI_FALLBACK_MODEL,
+                prompt
+            )
 
-    if is_private:
-        should_reply = True
+        # ----------------------------------------------------
+        # No response
+        # ----------------------------------------------------
 
-    elif is_group:
-        if event.mentioned:
-            should_reply = True
+        if not reply:
+            return None
 
-        elif event.is_reply:
-            replied_msg = await event.get_reply_message()
+        # ----------------------------------------------------
+        # Clean response
+        # ----------------------------------------------------
 
-            if replied_msg and replied_msg.out:
-                should_reply = True
+        reply = reply.strip()
 
-        elif chat_id == OWNER_GROUP_ID:
-            if random.random() < OWNER_GROUP_REPLY_CHANCE:
-                should_reply = True
+        if not reply:
+            return None
 
-    print(
-        f"[debug] should_reply={should_reply}"
-    )
-
-    if not should_reply:
+        # Remove accidental surrounding quotes
         if (
-            is_group
-            and chat_id == OWNER_GROUP_ID
-            and user_text
+            len(reply) >= 2
+            and reply.startswith('"')
+            and reply.endswith('"')
         ):
-            emoji = pick_keyword_reaction(
-                user_text
+            reply = reply[1:-1].strip()
+
+        # ----------------------------------------------------
+        # Duplicate response protection
+        # ----------------------------------------------------
+
+        if reply_was_recently_used(
+            chat_id,
+            reply
+        ):
+
+            regenerate_instruction = (
+                "\nIMPORTANT: Your previous generated answer was "
+                "too similar to a recent answer. Give a genuinely "
+                "different response to the CURRENT latest message. "
+                "Do not repeat the previous wording."
             )
 
-            if (
-                emoji
-                and random.random() < REACTION_CHANCE
-            ):
-                await send_reaction(
-                    chat_id,
-                    event.id,
-                    emoji
+            regenerate_prompt = (
+                prompt
+                + regenerate_instruction
+            )
+
+            different_reply = await call_gemini(
+                GEMINI_MODEL,
+                regenerate_prompt
+            )
+
+            if not different_reply:
+                different_reply = await call_gemini(
+                    GEMINI_FALLBACK_MODEL,
+                    regenerate_prompt
                 )
 
+            if different_reply:
+                different_reply = (
+                    different_reply.strip()
+                )
+
+                if different_reply:
+                    reply = different_reply
+
+        # ----------------------------------------------------
+        # Remember reply
+        # ----------------------------------------------------
+
+        remember_ai_reply(
+            chat_id,
+            reply
+        )
+
+        # ----------------------------------------------------
+        # Save assistant history
+        # ----------------------------------------------------
+
+        add_history(
+            chat_id,
+            "assistant",
+            reply
+        )
+
+        return reply
+
+
+# ============================================================
+# REACTIONS
+# ============================================================
+
+async def maybe_react(event, text):
+    if not text:
         return
 
-    if not user_text:
-        print(
-            "[debug] empty user_text, skipping"
-        )
+    if random.random() > REACTION_CHANCE:
         return
+
+    for pattern, emoji in KEYWORD_REACTIONS:
+
+        if re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        ):
+
+            try:
+                await client(
+                    functions.messages.SendReactionRequest(
+                        peer=event.chat_id,
+                        msg_id=event.id,
+                        reaction=[
+                            types.ReactionEmoji(
+                                emoticon=emoji
+                            )
+                        ],
+                    )
+                )
+
+            except Exception as e:
+                print(
+                    f"[reaction error] {e}"
+                )
+
+            break
+
+
+# ============================================================
+# SPAM DETECTION
+# ============================================================
+
+def is_spam(user_id, text):
+    if not user_id or not text:
+        return False
 
     now = time.time()
-    gap = now - last_incoming_time[chat_id]
-    last_incoming_time[chat_id] = now
 
-    if 0 < gap < QUICK_REPLY_WINDOW:
-        silent_wait = random.uniform(
-            *QUICK_DELAY_RANGE
-        )
-    else:
-        silent_wait = random.uniform(
-            *NORMAL_DELAY_RANGE
-        )
+    messages = recent_msgs_for_spam[user_id]
 
-    print(
-        f"[debug] will wait "
-        f"{silent_wait:.1f}s before replying"
+    messages.append(
+        (now, text.strip().lower())
     )
 
-    # Presence starts independently of Gemini. If the account is offline, the
-    # first message causes a 6-second human-like pause before ONLINE appears.
-    await activate_presence_for_message()
+    cutoff = now - SPAM_WINDOW
 
-    extra_system = ""
+    recent_msgs_for_spam[user_id] = [
+        item
+        for item in messages
+        if item[0] >= cutoff
+    ]
 
-    if user_id:
-        mem = get_user_memory_context(
-            user_id
-        )
+    recent_texts = [
+        item[1]
+        for item in recent_msgs_for_spam[user_id]
+    ]
 
-        if mem:
-            extra_system = mem
+    if (
+        len(recent_texts) >= SPAM_REPEAT_THRESHOLD
+        and len(set(recent_texts[-SPAM_REPEAT_THRESHOLD:])) == 1
+    ):
+        return True
+
+    return False
+
+
+async def maybe_warn_spam(event, user_id):
+    now = time.time()
+
+    if (
+        now - last_spam_warning.get(user_id, 0)
+        < SPAM_WARN_COOLDOWN
+    ):
+        return
+
+    last_spam_warning[user_id] = now
 
     try:
-        await asyncio.sleep(
-            silent_wait
-        )
-
-        print(
-            "[debug] wait done, marking read"
-        )
-
-        try:
-            await client.send_read_acknowledge(
-                chat_id,
-                message=event.message
-            )
-
-        except Exception as e:
-            print(
-                f"[read-ack error] {e}"
-            )
-
-        print(
-            "[debug] calling gemini"
-        )
-
-        # Do not keep Telegram's typing indicator open while waiting for the
-        # remote AI request. Generate first, then simulate a short typing burst.
-        reply = await get_ai_reply(
-            chat_id,
-            user_text,
-            extra_system=extra_system
-        )
-
-        print(
-            f"[debug] gemini returned: {reply!r}"
-        )
-
-        if reply is None:
-            print(
-                "[debug] reply is None, staying silent"
-            )
-            return
-
-        typing_for = natural_typing_seconds(
-            reply
-        )
-
-        print(
-            f"[debug] short typing simulation: "
-            f"{typing_for:.1f}s"
-        )
-
-        async with client.action(
-            chat_id,
-            "typing"
-        ):
-            await asyncio.sleep(
-                typing_for
-            )
-
         await event.reply(
-            reply
+            "arre bhai same cheez baar baar mat bhejo 😭"
         )
-
-        print(
-            "[debug] reply sent successfully"
-        )
-
-        last_activity_time[chat_id] = time.time()
-
     except Exception as e:
         print(
-            f"[error] chat_id={chat_id}: {e}"
+            f"[spam warning error] {e}"
         )
 
 
+# ============================================================
+# PRESENCE
+# ============================================================
+
 async def _set_account_online():
-    """Explicitly tell Telegram that this account is online."""
     global presence_online
 
     try:
@@ -1024,6 +885,7 @@ async def _set_account_online():
         return True
 
     except Exception as e:
+
         presence_online = False
 
         print(
@@ -1034,10 +896,10 @@ async def _set_account_online():
 
 
 async def _set_account_offline():
-    """Explicitly tell Telegram that this account is offline."""
     global presence_online
 
     try:
+
         await client(
             functions.account.UpdateStatusRequest(
                 offline=True
@@ -1051,20 +913,24 @@ async def _set_account_offline():
         )
 
     except Exception as e:
+
         print(
             f"[presence] offline update failed: {e}"
         )
 
 
 async def _presence_worker():
-    """Refresh online status until the 10-minute activity window expires."""
     global presence_task
 
     try:
+
         while True:
+
             async with presence_lock:
+
                 remaining = (
-                    presence_until - time.time()
+                    presence_until
+                    - time.time()
                 )
 
                 active = presence_online
@@ -1072,7 +938,6 @@ async def _presence_worker():
             if not active or remaining <= 0:
                 break
 
-            # Refresh before Telegram's status naturally expires.
             await asyncio.sleep(
                 min(
                     PRESENCE_REFRESH_SECONDS,
@@ -1081,8 +946,10 @@ async def _presence_worker():
             )
 
             async with presence_lock:
+
                 remaining = (
-                    presence_until - time.time()
+                    presence_until
+                    - time.time()
                 )
 
             if remaining <= 0:
@@ -1094,11 +961,13 @@ async def _presence_worker():
         raise
 
     except Exception as e:
+
         print(
             f"[presence worker error] {e}"
         )
 
     finally:
+
         await _set_account_offline()
 
         async with presence_lock:
@@ -1106,12 +975,12 @@ async def _presence_worker():
 
 
 async def activate_presence_for_message():
-    """Start/extend the account presence window for an incoming message."""
     global presence_until
     global presence_task
     global presence_starting
 
     async with presence_lock:
+
         now = time.time()
 
         was_active = (
@@ -1125,6 +994,7 @@ async def activate_presence_for_message():
             presence_starting = True
 
     if not was_active and not was_starting:
+
         print(
             f"[presence] offline -> waiting "
             f"{PRESENCE_START_DELAY:.1f}s before ONLINE"
@@ -1140,10 +1010,11 @@ async def activate_presence_for_message():
             presence_starting = False
 
     elif was_starting:
-        # Another message arrived during the initial 6-second wait. Do not
-        # add another 6-second delay; the first presence activation owns it.
+
         while True:
+
             async with presence_lock:
+
                 if (
                     presence_online
                     or not presence_starting
@@ -1153,11 +1024,12 @@ async def activate_presence_for_message():
             await asyncio.sleep(0.1)
 
         async with presence_lock:
+
             if not presence_online:
                 return
 
     async with presence_lock:
-        # Treat incoming activity as a fresh 10-minute active window.
+
         presence_until = (
             time.time()
             + PRESENCE_ACTIVE_SECONDS
@@ -1172,8 +1044,14 @@ async def activate_presence_for_message():
             )
 
 
+# ============================================================
+# REAL GROUP STATS
+# ============================================================
+
 def get_real_stats_line():
+
     today = today_str()
+
     today_count = daily_counts.get(
         today,
         0
@@ -1182,6 +1060,7 @@ def get_real_stats_line():
     past_counts = []
 
     for i in range(1, 8):
+
         d = (
             datetime.now(IST)
             - timedelta(days=i)
@@ -1195,55 +1074,59 @@ def get_real_stats_line():
     if not past_counts:
         return None
 
-    avg = sum(past_counts) / len(
-        past_counts
+    avg = (
+        sum(past_counts)
+        / len(past_counts)
     )
 
     if today_count > avg * 1.3:
+
         trend = "busier than usual"
 
     elif today_count < avg * 0.7:
+
         trend = "quieter than usual"
 
     else:
+
         trend = "about normal"
 
     return (
         f"Real fact: today there have been "
         f"{today_count} messages in the group, "
-        f"compared to a recent daily average of about "
-        f"{avg:.0f}. That makes today {trend}. "
-        f"Mention this casually and naturally, using "
-        f"these exact real numbers/trend — do not invent "
-        f"different numbers."
+        f"compared to a recent daily average of "
+        f"about {avg:.0f}. That makes today "
+        f"{trend}. Mention this casually and naturally, "
+        f"using these exact real numbers/trend — "
+        f"do not invent different numbers."
     )
 
 
+# ============================================================
+# INACTIVE USER
+# ============================================================
+
 def get_inactive_nudge_target():
+
     now = time.time()
 
     candidates = [
         uid
         for uid, last_seen in user_last_seen.items()
-        if now - last_seen
-        > INACTIVE_DAYS_THRESHOLD
+        if now - last_seen > INACTIVE_DAYS_THRESHOLD
     ]
 
     if not candidates:
         return None
 
-    uid = random.choice(
-        candidates
-    )
+    uid = random.choice(candidates)
 
     name = user_names.get(
         uid,
         "yaar"
     )
 
-    username = user_usernames.get(
-        uid
-    )
+    username = user_usernames.get(uid)
 
     mention = (
         f"@{username}"
@@ -1254,79 +1137,549 @@ def get_inactive_nudge_target():
     return uid, mention
 
 
+# ============================================================
+# MESSAGE HANDLER
+# ============================================================
+
+@client.on(events.NewMessage)
+async def incoming_message(event):
+
+    global AI_ENABLED
+
+    try:
+
+        # ----------------------------------------------------
+        # Ignore own messages
+        # ----------------------------------------------------
+
+        if event.out:
+
+            return
+
+        # ----------------------------------------------------
+        # Get message text
+        # ----------------------------------------------------
+
+        user_text = (
+            event.raw_text
+            or ""
+        ).strip()
+
+        if not user_text:
+
+            return
+
+        chat_id = event.chat_id
+
+        # ----------------------------------------------------
+        # Sender information
+        # ----------------------------------------------------
+
+        sender = None
+
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            sender = None
+
+        user_id = (
+            getattr(sender, "id", None)
+            if sender
+            else None
+        )
+
+        first_name = (
+            getattr(sender, "first_name", None)
+            if sender
+            else None
+        )
+
+        last_name = (
+            getattr(sender, "last_name", None)
+            if sender
+            else None
+        )
+
+        username = (
+            getattr(sender, "username", None)
+            if sender
+            else None
+        )
+
+        display_name = "User"
+
+        if first_name or last_name:
+
+            display_name = " ".join(
+                part
+                for part in [
+                    first_name,
+                    last_name
+                ]
+                if part
+            ).strip()
+
+        elif username:
+
+            display_name = username
+
+        if user_id:
+
+            user_names[user_id] = display_name
+
+            if username:
+                user_usernames[user_id] = username
+
+            user_last_seen[user_id] = time.time()
+
+            add_user_memory(
+                user_id,
+                user_text
+            )
+
+        # ----------------------------------------------------
+        # Track activity
+        # ----------------------------------------------------
+
+        last_incoming_time[chat_id] = time.time()
+
+        last_activity_time[chat_id] = time.time()
+
+        today = today_str()
+
+        daily_counts[today] += 1
+
+        # ----------------------------------------------------
+        # Owner controls
+        # ----------------------------------------------------
+
+        command = user_text.lower().strip()
+
+        if command == ".aion":
+
+            AI_ENABLED = True
+
+            try:
+                await event.reply(
+                    "ai on kar diya."
+                )
+            except Exception:
+                pass
+
+            return
+
+        if command == ".aioff":
+
+            AI_ENABLED = False
+
+            try:
+                await event.reply(
+                    "ai off kar diya."
+                )
+            except Exception:
+                pass
+
+            return
+
+        # ----------------------------------------------------
+        # AI disabled
+        # ----------------------------------------------------
+
+        if not AI_ENABLED:
+
+            return
+
+        # ----------------------------------------------------
+        # Quiet hours
+        # ----------------------------------------------------
+
+        if is_quiet_hours():
+
+            return
+
+        # ----------------------------------------------------
+        # Spam protection
+        # ----------------------------------------------------
+
+        if user_id and is_spam(
+            user_id,
+            user_text
+        ):
+
+            await maybe_warn_spam(
+                event,
+                user_id
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Presence
+        # ----------------------------------------------------
+
+        asyncio.create_task(
+            activate_presence_for_message()
+        )
+
+        # ----------------------------------------------------
+        # Reaction
+        # ----------------------------------------------------
+
+        await maybe_react(
+            event,
+            user_text
+        )
+
+        # ----------------------------------------------------
+        # Determine whether we should answer
+        # ----------------------------------------------------
+
+        is_group = False
+
+        try:
+
+            chat = await event.get_chat()
+
+            is_group = bool(
+                getattr(
+                    chat,
+                    "megagroup",
+                    False
+                )
+                or getattr(
+                    chat,
+                    "broadcast",
+                    False
+                )
+            )
+
+        except Exception:
+            pass
+
+        should_reply = True
+
+        # ----------------------------------------------------
+        # Group reply probability
+        # ----------------------------------------------------
+
+        if is_group:
+
+            # Always reply if directly mentioned
+            mentioned = False
+
+            try:
+
+                text_lower = user_text.lower()
+
+                me = await client.get_me()
+
+                my_username = getattr(
+                    me,
+                    "username",
+                    None
+                )
+
+                if my_username:
+
+                    if (
+                        f"@{my_username.lower()}"
+                        in text_lower
+                    ):
+                        mentioned = True
+
+            except Exception:
+                pass
+
+            # Reply to explicit Telegram reply to our message
+            replied_to_us = False
+
+            try:
+
+                if event.is_reply:
+
+                    replied = await event.get_reply_message()
+
+                    if replied and replied.out:
+                        replied_to_us = True
+
+            except Exception:
+                pass
+
+            if not mentioned and not replied_to_us:
+
+                should_reply = (
+                    random.random()
+                    < OWNER_GROUP_REPLY_CHANCE
+                )
+
+        if not should_reply:
+
+            return
+
+        # ----------------------------------------------------
+        # Build user-specific memory
+        # ----------------------------------------------------
+
+        extra_system = ""
+
+        if user_id:
+
+            mem = get_user_memory_context(
+                user_id
+            )
+
+            if mem:
+
+                extra_system = mem
+
+        # ----------------------------------------------------
+        # Natural response delay
+        # ----------------------------------------------------
+
+        now = time.time()
+
+        previous_message_time = (
+            last_incoming_time.get(
+                chat_id,
+                0
+            )
+        )
+
+        if (
+            now - previous_message_time
+            <= QUICK_REPLY_WINDOW
+        ):
+
+            silent_wait = random.uniform(
+                *QUICK_DELAY_RANGE
+            )
+
+        else:
+
+            silent_wait = random.uniform(
+                *NORMAL_DELAY_RANGE
+            )
+
+        try:
+
+            await asyncio.sleep(
+                silent_wait
+            )
+
+            print(
+                "[debug] wait done, marking read"
+            )
+
+            try:
+
+                await client.send_read_acknowledge(
+                    chat_id,
+                    message=event.message
+                )
+
+            except Exception as e:
+
+                print(
+                    f"[read-ack error] {e}"
+                )
+
+            print(
+                "[debug] calling gemini"
+            )
+
+            # ------------------------------------------------
+            # AI
+            # ------------------------------------------------
+
+            reply = await get_ai_reply(
+                chat_id,
+                user_text,
+                extra_system=extra_system,
+                sender_name=(
+                    user_names.get(user_id)
+                    if user_id
+                    else None
+                ),
+                sender_id=user_id,
+            )
+
+            print(
+                f"[debug] gemini returned: {reply!r}"
+            )
+
+            if reply is None:
+
+                print(
+                    "[debug] reply is None, staying silent"
+                )
+
+                return
+
+            # ------------------------------------------------
+            # Typing simulation
+            # ------------------------------------------------
+
+            typing_for = natural_typing_seconds(
+                reply
+            )
+
+            print(
+                f"[debug] short typing simulation: "
+                f"{typing_for:.1f}s"
+            )
+
+            async with client.action(
+                chat_id,
+                "typing"
+            ):
+
+                await asyncio.sleep(
+                    typing_for
+                )
+
+            # ------------------------------------------------
+            # Send reply
+            # ------------------------------------------------
+
+            await event.reply(
+                reply
+            )
+
+            print(
+                "[debug] reply sent successfully"
+            )
+
+            last_activity_time[chat_id] = (
+                time.time()
+            )
+
+        except Exception as e:
+
+            print(
+                f"[error] chat_id={chat_id}: {e}"
+            )
+
+    except Exception as e:
+
+        print(
+            f"[incoming handler error] {e}"
+        )
+
+
+# ============================================================
+# IDLE WATCHER
+# ============================================================
+
 async def idle_watcher():
+
     global sent_good_morning_date
     global sent_good_night_date
 
     while True:
+
         await asyncio.sleep(
             IDLE_CHECK_INTERVAL
         )
 
         if not AI_ENABLED:
+
             continue
 
         now_ist = datetime.now(IST)
+
         today = today_str()
 
+        # ----------------------------------------------------
+        # Good morning
+        # ----------------------------------------------------
+
         if (
-            now_ist.hour == GOOD_MORNING_HOUR
-            and sent_good_morning_date != today
+            now_ist.hour
+            == GOOD_MORNING_HOUR
+            and
+            sent_good_morning_date
+            != today
         ):
+
             try:
+
                 reply = await get_ai_reply(
                     OWNER_GROUP_ID,
                     user_message=None,
                     extra_system=(
-                        "Send a short, casual good morning "
-                        "message to the group."
+                        "Send a short, casual good "
+                        "morning message to the group."
                     ),
                 )
 
                 if reply:
+
                     await client.send_message(
                         OWNER_GROUP_ID,
                         reply
                     )
 
                 sent_good_morning_date = today
+
                 continue
 
             except Exception as e:
+
                 print(
                     f"[good morning error] {e}"
                 )
 
+        # ----------------------------------------------------
+        # Good night
+        # ----------------------------------------------------
+
         if (
-            now_ist.hour == GOOD_NIGHT_HOUR
-            and sent_good_night_date != today
+            now_ist.hour
+            == GOOD_NIGHT_HOUR
+            and
+            sent_good_night_date
+            != today
         ):
+
             try:
+
                 reply = await get_ai_reply(
                     OWNER_GROUP_ID,
                     user_message=None,
                     extra_system=(
-                        "Send a short, casual good night "
-                        "message to the group."
+                        "Send a short, casual good "
+                        "night message to the group."
                     ),
                 )
 
                 if reply:
+
                     await client.send_message(
                         OWNER_GROUP_ID,
                         reply
                     )
 
                 sent_good_night_date = today
+
                 continue
 
             except Exception as e:
+
                 print(
                     f"[good night error] {e}"
                 )
 
+        # ----------------------------------------------------
+        # Quiet hours
+        # ----------------------------------------------------
+
         if is_quiet_hours():
+
             continue
+
+        # ----------------------------------------------------
+        # Idle check
+        # ----------------------------------------------------
 
         idle_for = (
             time.time()
@@ -1336,12 +1689,15 @@ async def idle_watcher():
         )
 
         if idle_for < IDLE_THRESHOLD_MIN:
+
             continue
 
         if idle_for >= IDLE_THRESHOLD_MAX:
+
             chance = 1.0
 
         else:
+
             span = (
                 IDLE_THRESHOLD_MAX
                 - IDLE_THRESHOLD_MIN
@@ -1349,7 +1705,8 @@ async def idle_watcher():
 
             chance = (
                 PROACTIVE_MESSAGE_CHANCE
-                + (
+                +
+                (
                     idle_for
                     - IDLE_THRESHOLD_MIN
                 )
@@ -1358,7 +1715,12 @@ async def idle_watcher():
             )
 
         if random.random() > chance:
+
             continue
+
+        # ----------------------------------------------------
+        # Select proactive type
+        # ----------------------------------------------------
 
         kinds = list(
             PROACTIVE_KIND_WEIGHTS.keys()
@@ -1370,41 +1732,71 @@ async def idle_watcher():
 
         kind = random.choices(
             kinds,
-            weights,
+            weights=weights,
             k=1
         )[0]
 
         extra_system = None
 
+        # ----------------------------------------------------
+        # Stats
+        # ----------------------------------------------------
+
         if kind == "stats":
-            extra_system = get_real_stats_line()
+
+            extra_system = (
+                get_real_stats_line()
+            )
 
             if extra_system is None:
+
                 kind = "topic"
+
+        # ----------------------------------------------------
+        # Inactive user
+        # ----------------------------------------------------
 
         target_uid = None
 
         if kind == "inactive_nudge":
-            result = get_inactive_nudge_target()
+
+            result = (
+                get_inactive_nudge_target()
+            )
 
             if result is None:
+
                 kind = "topic"
 
             else:
+
                 target_uid, mention = result
 
                 extra_system = (
-                    f"It's been a while since {mention} "
-                    f"was active in the group. Send a short, "
-                    f"friendly message casually calling them "
-                    f"out to say hi or share what's up, "
-                    f"mentioning them as '{mention}'."
+                    f"It's been a while since "
+                    f"{mention} was active in the group. "
+                    f"Send a short, friendly message "
+                    f"casually calling them out to say hi "
+                    f"or share what's up, mentioning them "
+                    f"as '{mention}'."
                 )
 
+        # ----------------------------------------------------
+        # Topic
+        # ----------------------------------------------------
+
         if kind == "topic":
-            extra_system = TOPIC_PROMPT_ADDITION
+
+            extra_system = (
+                TOPIC_PROMPT_ADDITION
+            )
+
+        # ----------------------------------------------------
+        # Send proactive message
+        # ----------------------------------------------------
 
         try:
+
             msg = await get_ai_reply(
                 OWNER_GROUP_ID,
                 user_message=None,
@@ -1412,12 +1804,14 @@ async def idle_watcher():
             )
 
             if msg is None:
+
                 continue
 
             async with client.action(
                 OWNER_GROUP_ID,
                 "typing"
             ):
+
                 await asyncio.sleep(
                     min(
                         2.0,
@@ -1438,17 +1832,24 @@ async def idle_watcher():
                 kind == "inactive_nudge"
                 and target_uid
             ):
+
                 user_last_seen[
                     target_uid
                 ] = time.time()
 
         except Exception as e:
+
             print(
                 f"[idle_watcher error] {e}"
             )
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 async def main():
+
     print(
         "Userbot starting..."
     )
@@ -1463,15 +1864,15 @@ async def main():
 
     await client.start()
 
-    # Start in an explicitly offline state. Incoming messages do not make the
-    # account intentionally visible until the 6-second presence delay passes.
+    # Start explicitly offline
     await _set_account_offline()
 
     me = await client.get_me()
 
     print(
-        f"Logged in as: "
-        f"{getattr(me, 'username', None) or getattr(me, 'first_name', 'unknown')}"
+        "Logged in as: "
+        f"{getattr(me, 'username', None) "
+        f"or getattr(me, 'first_name', 'unknown')}"
     )
 
     print(
@@ -1485,7 +1886,12 @@ async def main():
     await client.run_until_disconnected()
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
+
     client.loop.run_until_complete(
         main()
-  )
+)
