@@ -33,7 +33,7 @@ API_HASH = os.environ["TG_API_HASH"]
 SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 OWNER_GROUP_ID = -1004417177344
 
