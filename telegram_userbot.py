@@ -34,7 +34,7 @@ SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
 
 OWNER_GROUP_ID = -1004417177344
 
@@ -71,8 +71,7 @@ TYPING_CHARS_PER_SECOND = 18
 MAX_HISTORY_MESSAGES = 10
 MAX_USER_MEMORY_LINES = 6
 MAX_CONCURRENT_GEMINI = int(os.getenv("MAX_CONCURRENT_GEMINI", "3"))
-GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "10"))
-GEMINI_RETRY_DELAY = float(os.getenv("GEMINI_RETRY_DELAY", "1.0"))
+GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "12"))
 
 REACTION_CHANCE = 0.15
 KEYWORD_REACTIONS = [
@@ -242,143 +241,138 @@ def clean_ai_reply(text: str) -> str:
     """Remove common AI formatting without changing the actual meaning."""
     text = re.sub(r"^\s*(assistant|avni)\s*:\s*", "", text, flags=re.I)
     text = text.strip().strip('`')
-    # Remove repeated punctuation while preserving a normal single mark.
     text = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], text)
     text = re.sub(r"\s+", " ", text).strip()
-    # Avoid giant multi-paragraph AI dumps in casual chats.
     if len(text) > 700:
         text = text[:697].rsplit(" ", 1)[0] + "..."
     return text
 
 
+def looks_incomplete_reply(text: str) -> bool:
+    """Catch obvious mid-thought/truncated casual replies before sending them."""
+    t = re.sub(r"\s+", " ", text.strip().lower())
+    if not t:
+        return True
+    # Very short fragments are fine in chat, but these endings strongly suggest truncation.
+    incomplete_endings = (
+        "bas mujhe", "mujhe yeh", "yeh sab", "aur", "aur tum",
+        "kyunki", "because", "lekin", "par", "toh", "phir",
+        "agar", "waise", "actually", "matlab", "main bas",
+    )
+    if any(t.endswith(x) for x in incomplete_endings):
+        return True
+    # If Gemini explicitly stopped because the output token limit was reached, retry.
+    return False
+
+
+def response_hit_token_limit(response) -> bool:
+    """Best-effort detection of Gemini MAX_TOKENS finish reason."""
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            reason = str(getattr(candidate, "finish_reason", "")).upper()
+            if "MAX_TOKENS" in reason or "LENGTH" in reason:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str = "", skip_history_add: bool = False):
-    """Generate a reply without blocking Telethon, with model failover."""
+    """Generate a reply safely without blocking Telethon."""
     lock = chat_locks[chat_id]
     async with lock:
-        # Build a temporary conversation so a failed API call does not leave
-        # an unmatched user turn in memory.
-        working_history = list(history[chat_id])
         if user_message and not skip_history_add:
-            working_history.append({"role": "user", "text": user_message})
-        working_history = working_history[-MAX_HISTORY_MESSAGES:]
+            history[chat_id].append({"role": "user", "text": user_message})
+            history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
 
         contents = []
-        for turn in working_history:
+        for turn in history[chat_id]:
             role = "user" if turn["role"] == "user" else "model"
             contents.append({"role": role, "parts": [{"text": turn["text"]}]})
-
         if not contents:
             contents = [{"role": "user", "parts": [{"text": "(start a short casual conversation)"}]}]
 
         system_text = SYSTEM_PROMPT_BASE + " " + get_mood_addition()
+        system_text += " Reply in 1-3 short natural chat lines. Always finish the thought; never stop mid-sentence or mid-phrase. Do not start a sentence and leave it unfinished."
         if extra_system:
             system_text += " " + extra_system
 
         def call_model(model_name):
-            # No tools/function calling are supplied. Keep this request simple
-            # and low-latency for Telegram chat.
             return genai_client.models.generate_content(
                 model=model_name,
                 contents=contents,
                 config={
                     "system_instruction": system_text,
-                    "max_output_tokens": 120,
+                    "max_output_tokens": 180,
                 },
             )
 
-        # Prefer the newest stable Flash model, then progressively use stable
-        # fallback models. A transient 503 must never make us silently stop.
-        models = []
-        for model_name in (
-            GEMINI_MODEL,
-            GEMINI_FALLBACK_MODEL,
-            "gemini-3.5-flash-lite",
-            "gemini-3.5-flash",
-        ):
-            if model_name and model_name not in models:
-                models.append(model_name)
+        models = [GEMINI_MODEL]
+        if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL not in models:
+            models.append(GEMINI_FALLBACK_MODEL)
 
         last_error = None
-
         async with gemini_semaphore:
             for model_name in models:
-                for attempt in range(2):
-                    try:
-                        print(f"[Gemini] requesting model={model_name} attempt={attempt + 1}/2")
-                        response = await asyncio.wait_for(
-                            asyncio.to_thread(call_model, model_name),
+                try:
+                    print(f"[Gemini] requesting model={model_name}")
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(call_model, model_name),
+                        timeout=GEMINI_TIMEOUT_SECONDS,
+                    )
+                    reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
+                    if not reply_text:
+                        raise RuntimeError("Gemini returned an empty response")
+                    if response_hit_token_limit(response) or looks_incomplete_reply(reply_text):
+                        print(f"[Gemini incomplete] model={model_name} retrying for complete reply: {reply_text!r}")
+                        retry_contents = list(contents) + [{"role": "user", "parts": [{"text": "Rewrite your last answer as a complete thought. Keep it short and natural. Do not leave the sentence unfinished."}]}]
+                        response2 = await asyncio.wait_for(
+                            asyncio.to_thread(lambda: genai_client.models.generate_content(
+                                model=model_name, contents=retry_contents,
+                                config={"system_instruction": system_text, "max_output_tokens": 220},
+                            )),
                             timeout=GEMINI_TIMEOUT_SECONDS,
                         )
-                        reply_text = clean_ai_reply(
-                            (getattr(response, "text", None) or "").strip()
-                        )
-                        if not reply_text:
-                            raise RuntimeError("Gemini returned an empty response")
-
-                        # Commit the conversation only after a successful answer.
-                        if user_message and not skip_history_add:
-                            history[chat_id].append({"role": "user", "text": user_message})
-                        history[chat_id].append({"role": "model", "text": reply_text})
-                        history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
-                        print(f"[Gemini] success model={model_name}")
-                        return reply_text
-
-                    except asyncio.TimeoutError as e:
-                        last_error = e
-                        print(
-                            f"[Gemini timeout] model={model_name} "
-                            f"after {GEMINI_TIMEOUT_SECONDS:.0f}s"
-                        )
-                    except Exception as e:
-                        last_error = e
-                        msg = str(e)
-                        upper = msg.upper()
-                        print(
-                            f"[Gemini error] model={model_name} "
-                            f"{type(e).__name__}: {msg}"
-                        )
-
-                        # Permanent/config errors: skip straight to another model.
-                        if any(x in upper for x in (
-                            "404", "NOT_FOUND", "PERMISSION_DENIED",
-                            "UNAUTHENTICATED", "INVALID_ARGUMENT",
-                            "API KEY", "API_KEY"
-                        )):
-                            break
-
-                        # Transient overload/rate-limit/server failures: one quick
-                        # retry, then immediately move to the next model.
-                        transient = any(x in upper for x in (
-                            "429", "500", "502", "503", "504", "UNAVAILABLE",
-                            "RESOURCE_EXHAUSTED", "DEADLINE"
-                        ))
-                        if transient and attempt == 0:
-                            await asyncio.sleep(GEMINI_RETRY_DELAY)
-                            continue
-
+                        reply_text = clean_ai_reply((getattr(response2, "text", None) or "").strip())
+                        if not reply_text or response_hit_token_limit(response2) or looks_incomplete_reply(reply_text):
+                            raise RuntimeError("Gemini produced an incomplete reply after retry")
+                    history[chat_id].append({"role": "model", "text": reply_text})
+                    history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+                    return reply_text
+                except asyncio.TimeoutError as e:
+                    last_error = e
+                    print(f"[Gemini timeout] model={model_name} after {GEMINI_TIMEOUT_SECONDS:.0f}s")
+                except Exception as e:
+                    last_error = e
+                    msg = str(e)
+                    print(f"[Gemini error] model={model_name} {type(e).__name__}: {msg}")
+                    # A model/access 404 is not fixed by retries; immediately try fallback.
+                    if "404" in msg or "NOT_FOUND" in msg or "not found" in msg.lower():
+                        continue
+                    # Rate limits/server errors get one short retry on the same model.
+                    if any(x in msg for x in ("429", "500", "502", "503", "504")):
+                        await asyncio.sleep(0.8)
+                        try:
+                            response = await asyncio.wait_for(
+                                asyncio.to_thread(call_model, model_name),
+                                timeout=GEMINI_TIMEOUT_SECONDS,
+                            )
+                            reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
+                            if reply_text and not response_hit_token_limit(response) and not looks_incomplete_reply(reply_text):
+                                history[chat_id].append({"role": "model", "text": reply_text})
+                                history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+                                return reply_text
+                        except Exception as retry_error:
+                            last_error = retry_error
+                            print(f"[Gemini retry failed] {type(retry_error).__name__}: {retry_error}")
+                        continue
+                    # Auth/configuration errors should not be retried repeatedly.
+                    if any(x in msg.upper() for x in ("API KEY", "PERMISSION_DENIED", "UNAUTHENTICATED")):
                         break
 
-        # Never leave a Telegram user with an unexplained silent failure.
-        # This is intentionally a small, neutral local fallback, not a claim
-        # that Gemini generated the response.
-        fallback_replies = (
-            "haan bolo",
-            "hmm bolo",
-            "haan, sun rahi hu",
-            "bol na",
-        )
-        local_reply = random.choice(fallback_replies)
-        print(
-            f"[Gemini unavailable] using local fallback after "
-            f"{len(models)} model(s); last_error={type(last_error).__name__ if last_error else 'unknown'}"
-        )
-
-        if user_message and not skip_history_add:
-            history[chat_id].append({"role": "user", "text": user_message})
-            history[chat_id].append({"role": "model", "text": local_reply})
-            history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
-
-        return local_reply
+        print(f"[Gemini failed] {type(last_error).__name__ if last_error else 'UnknownError'}: {last_error}")
+        return None
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ai(on|off)$'))
