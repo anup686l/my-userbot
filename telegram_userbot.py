@@ -34,7 +34,7 @@ SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash")
 
 OWNER_GROUP_ID = -1004417177344
 
@@ -282,12 +282,16 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
     """Generate a reply safely without blocking Telethon."""
     lock = chat_locks[chat_id]
     async with lock:
+        # Build a working copy first. Do not permanently save a user turn
+        # until we actually have a reply. This prevents failed requests from
+        # poisoning the next conversation turn.
+        working_history = list(history[chat_id])
         if user_message and not skip_history_add:
-            history[chat_id].append({"role": "user", "text": user_message})
-            history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+            working_history.append({"role": "user", "text": user_message})
+            working_history = working_history[-MAX_HISTORY_MESSAGES:]
 
         contents = []
-        for turn in history[chat_id]:
+        for turn in working_history:
             role = "user" if turn["role"] == "user" else "model"
             contents.append({"role": role, "parts": [{"text": turn["text"]}]})
         if not contents:
@@ -308,9 +312,8 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
                 },
             )
 
-        models = [GEMINI_MODEL]
-        if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL not in models:
-            models.append(GEMINI_FALLBACK_MODEL)
+        models = [GEMINI_MODEL, GEMINI_FALLBACK_MODEL, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash"]
+        models = list(dict.fromkeys([m for m in models if m]))
 
         last_error = None
         async with gemini_semaphore:
@@ -337,6 +340,8 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
                         reply_text = clean_ai_reply((getattr(response2, "text", None) or "").strip())
                         if not reply_text or response_hit_token_limit(response2) or looks_incomplete_reply(reply_text):
                             raise RuntimeError("Gemini produced an incomplete reply after retry")
+                    if user_message and not skip_history_add:
+                        history[chat_id] = working_history[-MAX_HISTORY_MESSAGES:]
                     history[chat_id].append({"role": "model", "text": reply_text})
                     history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
                     return reply_text
@@ -360,6 +365,8 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
                             )
                             reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
                             if reply_text and not response_hit_token_limit(response) and not looks_incomplete_reply(reply_text):
+                                if user_message and not skip_history_add:
+                                    history[chat_id] = working_history[-MAX_HISTORY_MESSAGES:]
                                 history[chat_id].append({"role": "model", "text": reply_text})
                                 history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
                                 return reply_text
@@ -372,7 +379,31 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
                         break
 
         print(f"[Gemini failed] {type(last_error).__name__ if last_error else 'UnknownError'}: {last_error}")
-        return None
+        # Never stay completely silent just because the free AI Studio API is
+        # temporarily busy/rate-limited. Keep this as a short, contextual
+        # local fallback; it is not presented as an AI-generated answer.
+        text = (user_message or "").strip().lower()
+        fallback = None
+        if not text:
+            fallback = "haan bolo"
+        elif re.search(r"^(hi+|hey+|hello+|hii+|heyy+)[!. ]*$", text):
+            fallback = random.choice(["heyy, bolo", "haan bolo kya hua", "hey, kya scene hai"])
+        elif "kya kar" in text or "kya kr" in text or "kya kar rahi" in text:
+            fallback = random.choice(["bas aise hi hoon, tum batao", "kuch khaas nahi, tum kya kar rahe ho", "bas chill kar rahi hu, tum batao"])
+        elif text in {"acha", "accha", "achha", "hmm", "hmm okay", "ok", "okay"}:
+            fallback = random.choice(["hmm", "haan", "acha ji", "hmm bolo"])
+        elif "kaha se" in text or "kahan se" in text:
+            fallback = "main Assam se hoon, tum?"
+        elif text in {"kyu", "kyon", "why"} or text.startswith("kyu ") or text.startswith("kyon "):
+            fallback = random.choice(["aise hi yaar", "bas mann nahi tha uss baat ka", "pata nahi yaar haha"])
+        else:
+            fallback = random.choice(["haan, sun rahi hu", "hmm bolo", "haan yaar, batao", "achha, bolo na"])
+
+        if user_message and not skip_history_add:
+            history[chat_id] = working_history[-MAX_HISTORY_MESSAGES:]
+            history[chat_id].append({"role": "model", "text": fallback})
+            history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+        return fallback
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ai(on|off)$'))
