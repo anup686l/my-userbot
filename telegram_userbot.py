@@ -33,8 +33,8 @@ API_HASH = os.environ["TG_API_HASH"]
 SESSION_STRING = os.environ["TG_SESSION_STRING"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash").strip()
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash").strip()
 
 OWNER_GROUP_ID = -1004417177344
 
@@ -295,8 +295,12 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
                     reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
                     if not reply_text:
                         raise RuntimeError("Gemini returned an empty response")
-                    history[chat_id].append({"role": "model", "text": reply_text})
-                    history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+                    # Only conversational replies belong in the chat history.
+                    # Proactive/welcome messages are generated without a user turn,
+                    # so recording them as model-only turns can confuse the next request.
+                    if user_message:
+                        history[chat_id].append({"role": "model", "text": reply_text})
+                        history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
                     return reply_text
                 except asyncio.TimeoutError as e:
                     last_error = e
@@ -318,8 +322,9 @@ async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str
                             )
                             reply_text = clean_ai_reply((getattr(response, "text", None) or "").strip())
                             if reply_text:
-                                history[chat_id].append({"role": "model", "text": reply_text})
-                                history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
+                                if user_message:
+                                    history[chat_id].append({"role": "model", "text": reply_text})
+                                    history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
                                 return reply_text
                         except Exception as retry_error:
                             last_error = retry_error
@@ -338,6 +343,11 @@ async def toggle_handler(event):
     global AI_ENABLED
     cmd = event.pattern_match.group(1).lower()
     AI_ENABLED = (cmd == "on")
+    if not AI_ENABLED:
+        for task in list(pending_tasks.values()):
+            if task and not task.done():
+                task.cancel()
+        pending_messages.clear()
     status = "on" if AI_ENABLED else "off"
     try:
         await event.edit(f"avni ai: {status}")
@@ -375,36 +385,142 @@ async def welcome_handler(event):
         print(f"[welcome error] {e}")
 
 
+# Per-chat batching prevents the bot from replying separately to rapid-fire
+# messages such as "hi", "heyy", "kya kr rhi ho". The worker waits briefly,
+# collects a small burst, and generates one contextual reply.
+pending_messages = defaultdict(list)
+pending_tasks = {}
+PENDING_BATCH_WAIT = float(os.getenv("PENDING_BATCH_WAIT", "1.2"))
+PENDING_MAX_WAIT = float(os.getenv("PENDING_MAX_WAIT", "2.8"))
+MAX_BATCH_MESSAGES = int(os.getenv("MAX_BATCH_MESSAGES", "5"))
+
+
+async def process_reply_batch(chat_id: int):
+    try:
+        # Let a burst of messages arrive before generating the answer.
+        await asyncio.sleep(PENDING_BATCH_WAIT)
+
+        started = time.monotonic()
+        while (time.monotonic() - started) < (PENDING_MAX_WAIT - PENDING_BATCH_WAIT):
+            if len(pending_messages[chat_id]) >= MAX_BATCH_MESSAGES:
+                break
+            await asyncio.sleep(0.15)
+
+        batch = pending_messages[chat_id][:MAX_BATCH_MESSAGES]
+        del pending_messages[chat_id][:len(batch)]
+
+        if not batch:
+            return
+
+        latest_event, _, _, _ = batch[-1]
+
+        # Preserve speaker names in group chats so Gemini knows who said what.
+        if latest_event.is_group or latest_event.is_channel:
+            parts = []
+            for _, uid, txt, name in batch:
+                label = name or "someone"
+                parts.append(f"{label}: {txt}")
+            combined_text = "\n".join(parts)
+        else:
+            combined_text = "\n".join(txt for _, _, txt, _ in batch)
+
+        # Prevent accidental context blow-up from a very large burst.
+        combined_text = combined_text[-2500:]
+
+        gap = time.time() - last_incoming_time[chat_id]
+        last_incoming_time[chat_id] = time.time()
+        if 0 < gap < QUICK_REPLY_WINDOW:
+            silent_wait = random.uniform(*QUICK_DELAY_RANGE)
+        else:
+            silent_wait = random.uniform(*NORMAL_DELAY_RANGE)
+
+        print(f"[debug] batch size={len(batch)} wait={silent_wait:.1f}s text={combined_text!r}")
+        await asyncio.sleep(silent_wait)
+
+        try:
+            await client.send_read_acknowledge(chat_id, message=latest_event.message)
+        except Exception as e:
+            print(f"[read-ack error] {e}")
+
+        extra_system = ""
+        # Add memory for the primary speaker only. This avoids leaking one
+        # person's private notes into another person's private chat.
+        primary_uid = batch[-1][1]
+        if primary_uid:
+            mem = get_user_memory_context(primary_uid)
+            if mem:
+                extra_system = mem
+
+        reply = await get_ai_reply(
+            chat_id,
+            combined_text,
+            extra_system=extra_system,
+        )
+        print(f"[debug] gemini returned: {reply!r}")
+
+        if not reply:
+            print("[debug] no reply generated")
+            return
+
+        typing_for = natural_typing_seconds(reply)
+        print(f"[debug] short typing simulation: {typing_for:.1f}s")
+        async with client.action(chat_id, "typing"):
+            await asyncio.sleep(typing_for)
+
+        # Reply to the latest message in the burst, rather than sending a
+        # disconnected message after a rapid conversation.
+        await latest_event.reply(reply)
+        print(f"[debug] reply sent successfully batch={len(batch)}")
+        last_activity_time[chat_id] = time.time()
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"[reply worker error] chat_id={chat_id}: {type(e).__name__}: {e}")
+    finally:
+        pending_tasks.pop(chat_id, None)
+        # If messages arrived while this worker was generating, start one
+        # follow-up worker rather than losing them.
+        if pending_messages[chat_id] and AI_ENABLED:
+            pending_tasks[chat_id] = asyncio.create_task(process_reply_batch(chat_id))
+
+
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
-    if not AI_ENABLED:
-        return
-    if event.out:
+    if not AI_ENABLED or event.out:
         return
 
     chat_id = event.chat_id
     is_private = event.is_private
     is_group = event.is_group or event.is_channel
 
-    print(f"[debug] message received chat_id={chat_id} is_private={is_private} is_group={is_group} text={event.raw_text!r}")
+    user_text = (event.raw_text or "").strip()
+    print(
+        f"[debug] message received chat_id={chat_id} "
+        f"is_private={is_private} is_group={is_group} text={user_text!r}"
+    )
+
+    if not user_text:
+        return
 
     sender = await event.get_sender()
     user_id = sender.id if sender else None
+    sender_name = (
+        (getattr(sender, "first_name", None) or "").strip()
+        if sender else ""
+    )
     if user_id:
-        user_names[user_id] = getattr(sender, "first_name", None) or "someone"
+        user_names[user_id] = sender_name or "someone"
         user_usernames[user_id] = getattr(sender, "username", None)
 
     last_activity_time[chat_id] = time.time()
 
-    user_text = event.raw_text or ""
-
     if chat_id == OWNER_GROUP_ID and user_id:
         user_last_seen[user_id] = time.time()
         daily_counts[today_str()] += 1
-        if user_text:
-            remember_message(user_id, user_text)
+        remember_message(user_id, user_text)
 
-    if is_group and chat_id == OWNER_GROUP_ID and user_id and user_text:
+    if is_group and chat_id == OWNER_GROUP_ID and user_id:
         if check_spam(user_id, user_text):
             now = time.time()
             if now - last_spam_warning[user_id] > SPAM_WARN_COOLDOWN:
@@ -423,73 +539,36 @@ async def handler(event):
         if event.mentioned:
             should_reply = True
         elif event.is_reply:
-            replied_msg = await event.get_reply_message()
-            if replied_msg and replied_msg.out:
-                should_reply = True
+            try:
+                replied_msg = await event.get_reply_message()
+                if replied_msg and replied_msg.out:
+                    should_reply = True
+            except Exception as e:
+                print(f"[reply-check error] {e}")
         elif chat_id == OWNER_GROUP_ID:
-            if random.random() < OWNER_GROUP_REPLY_CHANCE:
-                should_reply = True
+            should_reply = random.random() < OWNER_GROUP_REPLY_CHANCE
 
     print(f"[debug] should_reply={should_reply}")
 
     if not should_reply:
-        if is_group and chat_id == OWNER_GROUP_ID and user_text:
+        if is_group and chat_id == OWNER_GROUP_ID:
             emoji = pick_keyword_reaction(user_text)
             if emoji and random.random() < REACTION_CHANCE:
                 await send_reaction(chat_id, event.id, emoji)
         return
 
-    if not user_text:
-        print("[debug] empty user_text, skipping")
-        return
+    pending_messages[chat_id].append(
+        (event, user_id, user_text, sender_name)
+    )
+    # Bound the queue so a burst cannot create an unbounded backlog.
+    if len(pending_messages[chat_id]) > MAX_BATCH_MESSAGES * 2:
+        pending_messages[chat_id] = pending_messages[chat_id][-MAX_BATCH_MESSAGES:]
 
-    now = time.time()
-    gap = now - last_incoming_time[chat_id]
-    last_incoming_time[chat_id] = now
+    print(f"[debug] queued message; pending={len(pending_messages[chat_id])}")
 
-    if 0 < gap < QUICK_REPLY_WINDOW:
-        silent_wait = random.uniform(*QUICK_DELAY_RANGE)
-    else:
-        silent_wait = random.uniform(*NORMAL_DELAY_RANGE)
-
-    print(f"[debug] will wait {silent_wait:.1f}s before replying")
-
-    extra_system = ""
-    if user_id:
-        mem = get_user_memory_context(user_id)
-        if mem:
-            extra_system = mem
-
-    try:
-        await asyncio.sleep(silent_wait)
-        print("[debug] wait done, marking read")
-
-        try:
-            await client.send_read_acknowledge(chat_id, message=event.message)
-        except Exception as e:
-            print(f"[read-ack error] {e}")
-
-        print("[debug] calling gemini")
-        # Do not keep Telegram's typing indicator open while waiting for the
-        # remote AI request. Generate first, then simulate a short typing burst.
-        reply = await get_ai_reply(chat_id, user_text, extra_system=extra_system)
-        print(f"[debug] gemini returned: {reply!r}")
-
-        if reply is None:
-            print("[debug] reply is None, staying silent")
-            return
-
-        typing_for = natural_typing_seconds(reply)
-        print(f"[debug] short typing simulation: {typing_for:.1f}s")
-        async with client.action(chat_id, "typing"):
-            await asyncio.sleep(typing_for)
-
-        await event.reply(reply)
-        print("[debug] reply sent successfully")
-        last_activity_time[chat_id] = time.time()
-    except Exception as e:
-        print(f"[error] chat_id={chat_id}: {e}")
-
+    task = pending_tasks.get(chat_id)
+    if task is None or task.done():
+        pending_tasks[chat_id] = asyncio.create_task(process_reply_batch(chat_id))
 
 def get_real_stats_line():
     today = today_str()
