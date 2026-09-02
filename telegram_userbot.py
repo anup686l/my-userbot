@@ -50,9 +50,6 @@ IDLE_THRESHOLD_MIN = 40 * 60
 IDLE_THRESHOLD_MAX = 90 * 60
 PROACTIVE_MESSAGE_CHANCE = 0.5
 
-# When bot decides to send a proactive/idle message, how it's picked:
-# most of the time a normal topic-starter, sometimes a real stats comment,
-# sometimes a nudge to an inactive member
 PROACTIVE_KIND_WEIGHTS = {
     "topic": 0.55,
     "stats": 0.20,
@@ -66,7 +63,6 @@ QUICK_DELAY_RANGE = (0, 2)
 MAX_HISTORY_MESSAGES = 10
 MAX_USER_MEMORY_LINES = 6
 
-# Reactions (only in owner group, only for messages we're not replying to)
 REACTION_CHANCE = 0.15
 KEYWORD_REACTIONS = [
     (r"\b(haha+|lol|lmao|hehe+)\b", "😂"),
@@ -78,11 +74,10 @@ KEYWORD_REACTIONS = [
     (r"\b(good night|gn)\b", "🌙"),
 ]
 
-# Spam control
-SPAM_WINDOW = 60          # seconds
+SPAM_WINDOW = 60
 SPAM_REPEAT_THRESHOLD = 3
 LINK_PATTERN = re.compile(r"https?://|t\.me/|www\.", re.IGNORECASE)
-SPAM_WARN_COOLDOWN = 300  # don't re-warn same user within 5 min
+SPAM_WARN_COOLDOWN = 300
 
 INACTIVE_DAYS_THRESHOLD = 3 * 24 * 3600
 
@@ -137,14 +132,13 @@ history = defaultdict(list)
 last_incoming_time = defaultdict(lambda: 0.0)
 last_activity_time = defaultdict(lambda: time.time())
 
-# --- memory / stats state ---
-user_names = {}                          # user_id -> display name
-user_usernames = {}                      # user_id -> @username or None
-user_memory = defaultdict(list)          # user_id -> list of recent message snippets
-user_last_seen = {}                      # user_id -> timestamp (owner group only)
-recent_msgs_for_spam = defaultdict(list) # user_id -> [(timestamp, text)]
-last_spam_warning = defaultdict(float)   # user_id -> timestamp
-daily_counts = defaultdict(int)          # "YYYY-MM-DD" -> count, owner group only
+user_names = {}
+user_usernames = {}
+user_memory = defaultdict(list)
+user_last_seen = {}
+recent_msgs_for_spam = defaultdict(list)
+last_spam_warning = defaultdict(float)
+daily_counts = defaultdict(int)
 sent_good_morning_date = None
 sent_good_night_date = None
 
@@ -179,7 +173,6 @@ def get_user_memory_context(user_id: int) -> str:
 
 
 def remember_message(user_id: int, text: str):
-    # Lightweight memory: just keep recent snippets so the model has continuity
     if len(text) < 200:
         user_memory[user_id].append(text)
         user_memory[user_id] = user_memory[user_id][-MAX_USER_MEMORY_LINES:]
@@ -220,7 +213,6 @@ def check_spam(user_id: int, text: str) -> bool:
 
 
 def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str = "", skip_history_add: bool = False):
-    """Returns reply text, or None if it failed after retries (caller stays silent)."""
     if user_message and not skip_history_add:
         history[chat_id].append({"role": "user", "text": user_message})
         history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
@@ -310,6 +302,8 @@ async def handler(event):
     is_private = event.is_private
     is_group = event.is_group or event.is_channel
 
+    print(f"[debug] message received chat_id={chat_id} is_private={is_private} is_group={is_group} text={event.raw_text!r}")
+
     sender = await event.get_sender()
     user_id = sender.id if sender else None
     if user_id:
@@ -326,7 +320,6 @@ async def handler(event):
         if user_text:
             remember_message(user_id, user_text)
 
-    # --- Spam check (owner group only, to avoid false positives elsewhere) ---
     if is_group and chat_id == OWNER_GROUP_ID and user_id and user_text:
         if check_spam(user_id, user_text):
             now = time.time()
@@ -337,7 +330,7 @@ async def handler(event):
                     await event.reply("thoda slow yaar, spam mat karo")
                 except Exception as e:
                     print(f"[spam warn error] {e}")
-            return  # don't process further for this message
+            return
 
     should_reply = False
     if is_private:
@@ -353,7 +346,8 @@ async def handler(event):
             if random.random() < OWNER_GROUP_REPLY_CHANCE:
                 should_reply = True
 
-    # If not replying, maybe react with a meaningful emoji instead
+    print(f"[debug] should_reply={should_reply}")
+
     if not should_reply:
         if is_group and chat_id == OWNER_GROUP_ID and user_text:
             emoji = pick_keyword_reaction(user_text)
@@ -362,6 +356,7 @@ async def handler(event):
         return
 
     if not user_text:
+        print("[debug] empty user_text, skipping")
         return
 
     now = time.time()
@@ -373,6 +368,8 @@ async def handler(event):
     else:
         silent_wait = random.uniform(*NORMAL_DELAY_RANGE)
 
+    print(f"[debug] will wait {silent_wait:.1f}s before replying")
+
     extra_system = ""
     if user_id:
         mem = get_user_memory_context(user_id)
@@ -381,23 +378,32 @@ async def handler(event):
 
     try:
         await asyncio.sleep(silent_wait)
+        print("[debug] wait done, marking read")
 
+        try:
+            await client.send_read_acknowledge(chat_id, message=event.message)
+        except Exception as e:
+            print(f"[read-ack error] {e}")
+
+        print("[debug] calling gemini")
         async with client.action(chat_id, "typing"):
             reply = get_ai_reply(chat_id, user_text, extra_system=extra_system)
+            print(f"[debug] gemini returned: {reply!r}")
             if reply is not None:
                 await asyncio.sleep(random.uniform(1, 3))
 
         if reply is None:
+            print("[debug] reply is None, staying silent")
             return
 
         await event.reply(reply)
+        print("[debug] reply sent successfully")
         last_activity_time[chat_id] = time.time()
     except Exception as e:
         print(f"[error] chat_id={chat_id}: {e}")
 
 
 def get_real_stats_line():
-    """Builds a factual stats note based on real counts, for the AI to phrase naturally."""
     today = today_str()
     today_count = daily_counts.get(today, 0)
 
@@ -408,7 +414,7 @@ def get_real_stats_line():
             past_counts.append(daily_counts[d])
 
     if not past_counts:
-        return None  # not enough data to compare honestly
+        return None
 
     avg = sum(past_counts) / len(past_counts)
     if today_count > avg * 1.3:
@@ -453,7 +459,6 @@ async def idle_watcher():
         now_ist = datetime.now(IST)
         today = today_str()
 
-        # Scheduled good morning
         if now_ist.hour == GOOD_MORNING_HOUR and sent_good_morning_date != today:
             try:
                 reply = get_ai_reply(
@@ -467,7 +472,6 @@ async def idle_watcher():
             except Exception as e:
                 print(f"[good morning error] {e}")
 
-        # Scheduled good night
         if now_ist.hour == GOOD_NIGHT_HOUR and sent_good_night_date != today:
             try:
                 reply = get_ai_reply(
@@ -497,7 +501,6 @@ async def idle_watcher():
         if random.random() > chance:
             continue
 
-        # Decide what kind of proactive message to send
         kinds = list(PROACTIVE_KIND_WEIGHTS.keys())
         weights = list(PROACTIVE_KIND_WEIGHTS.values())
         kind = random.choices(kinds, weights=weights, k=1)[0]
@@ -506,7 +509,7 @@ async def idle_watcher():
         if kind == "stats":
             extra_system = get_real_stats_line()
             if extra_system is None:
-                kind = "topic"  # not enough data, fall back
+                kind = "topic"
 
         target_uid = None
         if kind == "inactive_nudge":
@@ -537,7 +540,7 @@ async def idle_watcher():
             last_activity_time[OWNER_GROUP_ID] = time.time()
 
             if kind == "inactive_nudge" and target_uid:
-                user_last_seen[target_uid] = time.time()  # avoid immediate re-nudge
+                user_last_seen[target_uid] = time.time()
         except Exception as e:
             print(f"[idle_watcher error] {e}")
 
