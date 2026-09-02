@@ -68,6 +68,14 @@ TYPING_MIN_SECONDS = 0.7
 TYPING_MAX_SECONDS = 2.8
 TYPING_CHARS_PER_SECOND = 18
 
+# Presence behavior: when the account is offline and a new message arrives,
+# wait 6 seconds before explicitly going online. Keep the account online for
+# up to 10 minutes of activity, refreshing the Telegram status periodically,
+# then explicitly mark it offline.
+PRESENCE_START_DELAY = float(os.getenv("PRESENCE_START_DELAY", "6"))
+PRESENCE_ACTIVE_SECONDS = float(os.getenv("PRESENCE_ACTIVE_SECONDS", "600"))
+PRESENCE_REFRESH_SECONDS = float(os.getenv("PRESENCE_REFRESH_SECONDS", "45"))
+
 MAX_HISTORY_MESSAGES = 10
 MAX_USER_MEMORY_LINES = 6
 MAX_CONCURRENT_GEMINI = int(os.getenv("MAX_CONCURRENT_GEMINI", "3"))
@@ -122,7 +130,8 @@ SYSTEM_PROMPT_BASE = (
     "member/admin — keep conversations lively, react to what people say, "
     "don't just answer and stop. "
     "IMPORTANT: If anyone directly asks whether you are an AI, a bot, or not "
-    "a real person, you must say no. "
+    "a real person, you must honestly say yes, you are an AI assistant. Never "
+    "claim to be a real human being when asked directly. "
     "CRITICAL: Never state any specific fact, number, or claim about group "
     "activity, message counts, or who has been active/inactive unless that "
     "exact information is explicitly given to you in this prompt — never "
@@ -147,6 +156,14 @@ last_incoming_time = defaultdict(lambda: 0.0)
 chat_locks = defaultdict(asyncio.Lock)
 gemini_semaphore = asyncio.Semaphore(MAX_CONCURRENT_GEMINI)
 last_activity_time = defaultdict(lambda: time.time())
+
+# Account-wide online presence state. Only one presence timer is needed because
+# Telegram online/offline status belongs to the logged-in account, not a chat.
+presence_lock = asyncio.Lock()
+presence_until = 0.0
+presence_task = None
+presence_online = False
+presence_starting = False
 
 user_names = {}
 user_usernames = {}
@@ -526,6 +543,10 @@ async def handler(event):
 
     print(f"[debug] will wait {silent_wait:.1f}s before replying")
 
+    # Presence starts independently of Gemini. If the account is offline, the
+    # first message causes a 6-second human-like pause before ONLINE appears.
+    await activate_presence_for_message()
+
     extra_system = ""
     if user_id:
         mem = get_user_memory_context(user_id)
@@ -561,6 +582,95 @@ async def handler(event):
         last_activity_time[chat_id] = time.time()
     except Exception as e:
         print(f"[error] chat_id={chat_id}: {e}")
+
+
+async def _set_account_online():
+    """Explicitly tell Telegram that this account is online."""
+    global presence_online
+    try:
+        await client(functions.account.UpdateStatusRequest(offline=False))
+        presence_online = True
+        print("[presence] account is ONLINE")
+        return True
+    except Exception as e:
+        presence_online = False
+        print(f"[presence] online update failed: {e}")
+        return False
+
+
+async def _set_account_offline():
+    """Explicitly tell Telegram that this account is offline."""
+    global presence_online
+    try:
+        await client(functions.account.UpdateStatusRequest(offline=True))
+        presence_online = False
+        print("[presence] account is OFFLINE")
+    except Exception as e:
+        print(f"[presence] offline update failed: {e}")
+
+
+async def _presence_worker():
+    """Refresh online status until the 10-minute activity window expires."""
+    global presence_task
+    try:
+        while True:
+            async with presence_lock:
+                remaining = presence_until - time.time()
+                active = presence_online
+            if not active or remaining <= 0:
+                break
+
+            # Refresh before Telegram's status naturally expires.
+            await asyncio.sleep(min(PRESENCE_REFRESH_SECONDS, max(1.0, remaining)))
+            async with presence_lock:
+                remaining = presence_until - time.time()
+            if remaining <= 0:
+                break
+            await _set_account_online()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"[presence worker error] {e}")
+    finally:
+        await _set_account_offline()
+        async with presence_lock:
+            presence_task = None
+
+
+async def activate_presence_for_message():
+    """Start/extend the account presence window for an incoming message."""
+    global presence_until, presence_task, presence_starting
+
+    async with presence_lock:
+        now = time.time()
+        was_active = presence_online and presence_until > now
+        was_starting = presence_starting
+        if not was_active and not was_starting:
+            presence_starting = True
+
+    if not was_active and not was_starting:
+        print(f"[presence] offline -> waiting {PRESENCE_START_DELAY:.1f}s before ONLINE")
+        await asyncio.sleep(PRESENCE_START_DELAY)
+        await _set_account_online()
+        async with presence_lock:
+            presence_starting = False
+    elif was_starting:
+        # Another message arrived during the initial 6-second wait. Do not
+        # add another 6-second delay; the first presence activation owns it.
+        while True:
+            async with presence_lock:
+                if presence_online or not presence_starting:
+                    break
+            await asyncio.sleep(0.1)
+        async with presence_lock:
+            if not presence_online:
+                return
+
+    async with presence_lock:
+        # Treat incoming activity as a fresh 10-minute active window.
+        presence_until = time.time() + PRESENCE_ACTIVE_SECONDS
+        if presence_task is None or presence_task.done():
+            presence_task = asyncio.create_task(_presence_worker())
 
 
 def get_real_stats_line():
@@ -707,6 +817,9 @@ async def main():
     print(f"Gemini model: {GEMINI_MODEL}")
     print(f"Owner group: {OWNER_GROUP_ID}")
     await client.start()
+    # Start in an explicitly offline state. Incoming messages do not make the
+    # account intentionally visible until the 6-second presence delay passes.
+    await _set_account_offline()
     me = await client.get_me()
     print(f"Logged in as: {getattr(me, 'username', None) or getattr(me, 'first_name', 'unknown')}")
     print("Listening for messages...")
