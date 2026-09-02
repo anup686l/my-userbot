@@ -212,7 +212,8 @@ def check_spam(user_id: int, text: str) -> bool:
     return repeats >= SPAM_REPEAT_THRESHOLD or (has_link and link_count >= 2)
 
 
-def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str = "", skip_history_add: bool = False):
+async def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str = "", skip_history_add: bool = False):
+    """Generate a reply without blocking Telethon's asyncio event loop."""
     if user_message and not skip_history_add:
         history[chat_id].append({"role": "user", "text": user_message})
         history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
@@ -229,23 +230,39 @@ def get_ai_reply(chat_id: int, user_message: str = None, extra_system: str = "",
     if extra_system:
         system_text += " " + extra_system
 
+    def call_gemini():
+        return genai_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config={
+                "system_instruction": system_text,
+                "max_output_tokens": 300,
+                "temperature": 0.8,
+            },
+        )
+
     last_error = None
     for attempt in range(3):
         try:
-            response = genai_client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config={"system_instruction": system_text, "max_output_tokens": 300},
-            )
-            reply_text = response.text
+            # The Google SDK call is synchronous. Run it in a worker thread so
+            # Telethon can continue receiving/processing Telegram updates.
+            response = await asyncio.to_thread(call_gemini)
+            reply_text = (getattr(response, "text", None) or "").strip()
+
+            if not reply_text:
+                raise RuntimeError("Gemini returned an empty response")
+
             history[chat_id].append({"role": "model", "text": reply_text})
+            history[chat_id] = history[chat_id][-MAX_HISTORY_MESSAGES:]
             return reply_text
+
         except Exception as e:
             last_error = e
-            print(f"[retry {attempt + 1}/3] {e}")
-            time.sleep(2 * (attempt + 1))
+            print(f"[Gemini retry {attempt + 1}/3] {type(e).__name__}: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
 
-    print(f"[failed after retries, staying silent] {last_error}")
+    print(f"[Gemini failed after retries] {type(last_error).__name__}: {last_error}")
     return None
 
 
@@ -275,7 +292,7 @@ async def welcome_handler(event):
         name = user.first_name or "yaar"
         await asyncio.sleep(random.uniform(3, 8))
         async with client.action(event.chat_id, "typing"):
-            reply = get_ai_reply(
+            reply = await get_ai_reply(
                 event.chat_id,
                 user_message=None,
                 extra_system=(
@@ -387,7 +404,7 @@ async def handler(event):
 
         print("[debug] calling gemini")
         async with client.action(chat_id, "typing"):
-            reply = get_ai_reply(chat_id, user_text, extra_system=extra_system)
+            reply = await get_ai_reply(chat_id, user_text, extra_system=extra_system)
             print(f"[debug] gemini returned: {reply!r}")
             if reply is not None:
                 await asyncio.sleep(random.uniform(1, 3))
@@ -461,7 +478,7 @@ async def idle_watcher():
 
         if now_ist.hour == GOOD_MORNING_HOUR and sent_good_morning_date != today:
             try:
-                reply = get_ai_reply(
+                reply = await get_ai_reply(
                     OWNER_GROUP_ID, user_message=None,
                     extra_system="Send a short, casual good morning message to the group.",
                 )
@@ -474,7 +491,7 @@ async def idle_watcher():
 
         if now_ist.hour == GOOD_NIGHT_HOUR and sent_good_night_date != today:
             try:
-                reply = get_ai_reply(
+                reply = await get_ai_reply(
                     OWNER_GROUP_ID, user_message=None,
                     extra_system="Send a short, casual good night message to the group.",
                 )
@@ -529,7 +546,7 @@ async def idle_watcher():
 
         try:
             async with client.action(OWNER_GROUP_ID, "typing"):
-                msg = get_ai_reply(OWNER_GROUP_ID, user_message=None, extra_system=extra_system)
+                msg = await get_ai_reply(OWNER_GROUP_ID, user_message=None, extra_system=extra_system)
                 if msg is not None:
                     await asyncio.sleep(random.uniform(1, 3))
 
@@ -547,8 +564,12 @@ async def idle_watcher():
 
 async def main():
     print("Userbot starting...")
+    print(f"Gemini model: {GEMINI_MODEL}")
+    print(f"Owner group: {OWNER_GROUP_ID}")
     await client.start()
-    print("Logged in. Listening for messages...")
+    me = await client.get_me()
+    print(f"Logged in as: {getattr(me, 'username', None) or getattr(me, 'first_name', 'unknown')}")
+    print("Listening for messages...")
     asyncio.create_task(idle_watcher())
     await client.run_until_disconnected()
 
